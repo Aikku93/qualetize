@@ -24,7 +24,7 @@ All conversions performed using default settings plus `-ditherin:floyd` and `-np
 
 | Palettes | Result |
 | - | - |
-| Baseline truth | ![Baseline truth](/examples/cat.bmp?raw=true) |
+| Baseline truth | ![Baseline truth](/examples/cat.png?raw=true) |
 | `-npal:1` | ![1 palette](/examples/cat-q1.bmp?raw=true) |
 | `-npal:2` | ![2 palettes](/examples/cat-q2.bmp?raw=true) |
 | `-npal:4` | ![4 palettes](/examples/cat-q4.bmp?raw=true) |
