@@ -25,7 +25,7 @@ static void InsertToDistortedClusterList(TCluster_t *Clusters, uint32_t Idx, uin
 	uint32_t Prev = CLUSTER_END_OF_LIST;
 	uint32_t Next = *Head;
 	float Dist = Clusters[Idx].TotalDist;
-	if(Dist != 0.0f) {
+	if(Dist > 1.0e-10f) {
 		//! NOTE: Only apply the Lagrangian when Dist != 0.0, or we might
 		//! accidentally split a cluster that /has/ no distortion, which
 		//! will make the program crash, since splitting assumes that
