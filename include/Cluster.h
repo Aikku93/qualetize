@@ -6,11 +6,6 @@
 #include "Vec4f.h"
 /************************************************/
 
-//! 0 = Use plain summation, 1 = Use compensated summation
-//! Compensated summation uses the Kahan algorithm, which
-//! gives more accurate results, but can be slower.
-#define CLUSTER_USE_COMPENSATED_SUMMATION 0
-
 //! "End of list" signal in linked lists
 #define CLUSTER_END_OF_LIST (~0u)
 
@@ -23,17 +18,14 @@
 //! where N is the number of dimensions.
 struct Cluster_t {
 	uint32_t nPoints;        //! Number of points assigned to cluster
-	uint32_t PrevCluster;    //! Previous cluster in list (used for sorting distorted clusters and tracking empty clusters)
 	uint32_t NextCluster;    //! Next cluster in list
 	uint32_t FirstDataIdx;   //! First data point assigned to this cluster
 	uint32_t MaxDistIdx;     //! Index of the most distorted data point
 	uint32_t MaxDistIdxPrev; //! Index previous to the most distorted data point
+	float    MaxDistVal;     //! Distortion of most distorted data point
 	float    TotalDist;      //! Sum of distortion of all data points in this cluster
 	float   *Centroid;       //! Centroid of cluster
 	float   *Training;       //! Training summation
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-	float   *cTraining;      //! Training summation compensation
-#endif
 };
 
 //! Specialized Vec4f_t cluster
@@ -49,12 +41,10 @@ Cluster_Vec4f_t {
 	uint32_t FirstDataIdx;
 	uint32_t MaxDistIdx;
 	uint32_t MaxDistIdxPrev;
+	float    MaxDistVal;
 	float    TotalDist;
 	Vec4f_t  Centroid;
 	Vec4f_t  Training;
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-	Vec4f_t  cTraining;
-#endif
 };
 
 /************************************************/
