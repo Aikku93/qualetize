@@ -6,57 +6,33 @@
 /************************************************/
 
 typedef        Vec4f_t         TClusterData_t;
-typedef        Vec4f_t         TClusterVector_t;
 typedef struct Cluster_Vec4f_t TCluster_t;
 
 /************************************************/
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-/************************************************/
 
-//! Kahan summation
-static inline Vec4f_t Vec4f_KahanSum(const Vec4f_t *Sum, const Vec4f_t *Input, Vec4f_t *c) {
-	Vec4f_t y = Vec4f_Sub(Input, c);
-	Vec4f_t t = Vec4f_Add(Sum, &y);
-	       *c = Vec4f_Sub(&t, Sum);
-	       *c = Vec4f_Sub(c, &y);
-	return t;
+static float TCluster_Dist2ToCentroid(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
+	(void)nDims;
+	return Vec4f_Dist2(Data, &x->Centroid);
 }
 
-/************************************************/
-#endif
-/************************************************/
+static void TCluster_ClearTrainingVector(TCluster_t *x, uint32_t nDims) {
+	(void)nDims;
+	x->Training = VEC4F_EMPTY;
+}
 
-//! Standard vector operations
-static void VecClear(TClusterVector_t *x, uint32_t nDims) {
+static void TCluster_AddToTraining(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
 	(void)nDims;
-	*x = VEC4F_EMPTY;
+	x->Training = Vec4f_Add(&x->Training, Data);
 }
-static void VecCopy(TClusterVector_t *Dst, const TClusterVector_t *Src, uint32_t nDims) {
+
+static void TCluster_ResolveCentroid(TCluster_t *x, uint32_t nDims) {
 	(void)nDims;
-	*Dst = *Src;
+	x->Centroid = Vec4f_Divi(&x->Training, (float)x->nPoints);
 }
-static void VecSet(TClusterVector_t *Dst, const TClusterData_t *Src, uint32_t nDims) {
+
+static void TCluster_SetCentroidToData(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
 	(void)nDims;
-	*Dst = *Src;
-}
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-static void VecSum(TClusterVector_t *Sum, const TClusterData_t *Input, TClusterVector_t *c, uint32_t nDims) {
-	(void)nDims;
-	*Sum = Vec4f_KahanSum(Sum, Input, c);
-}
-#else
-static void VecSum(TClusterVector_t *Sum, const TClusterData_t *Input, uint32_t nDims) {
-	(void)nDims;
-	*Sum = Vec4f_Add(Sum, Input);
-}
-#endif
-static void VecDivi(TClusterVector_t *x, float y, uint32_t nDims) {
-	(void)nDims;
-	*x = Vec4f_Divi(x, y);
-}
-static float VecDist2(const TClusterData_t *a, const TClusterVector_t *b, uint32_t nDims) {
-	(void)nDims;
-	return Vec4f_Dist2(a, b);
+	x->Centroid = *Data;
 }
 
 /************************************************/

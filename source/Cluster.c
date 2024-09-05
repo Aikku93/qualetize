@@ -5,61 +5,44 @@
 /************************************************/
 
 typedef        float     TClusterData_t;
-typedef        float*    TClusterVector_t;
 typedef struct Cluster_t TCluster_t;
 
 /************************************************/
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-/************************************************/
 
-//! Kahan summation
-static inline float KahanSum(float Sum, float Input, float *c) {
-	float y = Input - *c;
-	float t = Sum + y;
-	*c = t - Sum - y;
-	return t;
-}
-
-/************************************************/
-#endif
-/************************************************/
-
-//! Standard vector operations
-static void VecClear(TClusterVector_t *x, uint32_t nDims) {
+static float TCluster_Dist2ToCentroid(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
 	uint32_t n;
-	for(n=0;n<nDims;n++) (*x)[n] = 0.0f;
-}
-static void VecCopy(TClusterVector_t *Dst, const TClusterVector_t *Src, uint32_t nDims) {
-	uint32_t n;
-	for(n=0;n<nDims;n++) (*Dst)[n] = (*Src)[n];
-}
-static void VecSet(TClusterVector_t *Dst, const TClusterData_t *Src, uint32_t nDims) {
-	uint32_t n;
-	for(n=0;n<nDims;n++) (*Dst)[n] = Src[n];
-}
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-static void VecSum(TClusterVector_t *Sum, const TClusterData_t *Input, TClusterVector_t *c, uint32_t nDims) {
-	uint32_t n;
-	for(n=0;n<nDims;n++) (*Sum)[n] = KahanSum((*Sum)[n], Input[n], &(*c)[n]);
-}
-#else
-static void VecSum(TClusterVector_t *Sum, const TClusterData_t *Input, uint32_t nDims) {
-	uint32_t n;
-	for(n=0;n<nDims;n++) (*Sum)[n] += Input[n];
-}
-#endif
-static void VecDivi(TClusterVector_t *x, float y, uint32_t nDims) {
-	uint32_t n;
-	for(n=0;n<nDims;n++) (*x)[n] /= y;
-}
-static float VecDist2(const TClusterData_t *a, const TClusterVector_t *b, uint32_t nDims) {
-	uint32_t n;
-	float Dist = 0.0f;
+	float Dist2 = 0.0f;
 	for(n=0;n<nDims;n++) {
-		float d = a[n] - (*b)[n];
-		Dist += d*d;
+		float d = Data[n] - x->Centroid[n];
+		Dist2 += d*d;
 	}
-	return Dist;
+	return Dist2;
+}
+
+static void TCluster_ClearTrainingVector(TCluster_t *x, uint32_t nDims) {
+	uint32_t n;
+	for(n=0;n<nDims;n++) x->Training[n] = 0.0f;
+}
+
+static void TCluster_AddToTraining(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
+	uint32_t n;
+	for(n=0;n<nDims;n++) {
+		x->Training[n] += Data[n];
+	}
+}
+
+static void TCluster_ResolveCentroid(TCluster_t *x, uint32_t nDims) {
+	uint32_t n;
+	for(n=0;n<nDims;n++) {
+		x->Centroid[n] = x->Training[n] / (float)x->nPoints;
+	}
+}
+
+static void TCluster_SetCentroidToData(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
+	uint32_t n;
+	for(n=0;n<nDims;n++) {
+		x->Centroid[n] = Data[n];
+	}
 }
 
 /************************************************/
