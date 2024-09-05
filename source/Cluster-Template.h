@@ -16,27 +16,12 @@ static void RemoveFromList(uint32_t Prev, uint32_t Next, uint32_t *Head, uint32_
 }
 
 //! Add/remove a cluster in a distortion linked list (Head = Most distorted)
-//! Note that the Lagrangian here is used to constrain the number of points
-//! relative to the error; the idea here is that we will split huge clusters
-//! before small (ie. overfitted) clusters. For this to work, the lambda
-//! needs to be set relative to the average error of each point, or we may
-//! split huge clusters that have practically no error.
-static void InsertToDistortedClusterList(TCluster_t *Clusters, uint32_t Idx, uint32_t *Head, float nPointsLambda) {
+static void InsertToDistortedClusterList(TCluster_t *Clusters, uint32_t Idx, uint32_t *Head) {
 	uint32_t Prev = CLUSTER_END_OF_LIST;
 	uint32_t Next = *Head;
-	float Dist = Clusters[Idx].TotalDist;
-	if(Dist > 1.0e-10f) {
-		//! NOTE: Only apply the Lagrangian when Dist != 0.0, or we might
-		//! accidentally split a cluster that /has/ no distortion, which
-		//! will make the program crash, since splitting assumes that
-		//! MaxDistIdx != None. Also note that any clusters already in
-		//! the list must necessarily have Dist != 0.0, so we can skip
-		//! checking them before comparing.
-		Dist = Dist + nPointsLambda*(float)Clusters[Idx].nPoints;
-		while(
-			Next != CLUSTER_END_OF_LIST &&
-			Dist < (Clusters[Next].TotalDist + nPointsLambda*(float)Clusters[Next].nPoints)
-		) {
+	float Dist = Clusters[Idx].MaxDistVal;
+	if(Dist != 0.0f) {
+		while(Next != CLUSTER_END_OF_LIST && Dist < Clusters[Next].MaxDistVal) {
 			Prev = Next;
 			Next = Clusters[Next].NextCluster;
 		}
@@ -68,19 +53,12 @@ static uint32_t PopEmptyClusterList(TCluster_t *Clusters, uint32_t *Head) {
 //! Clear training data
 static inline void ClearTraining(TCluster_t *x, uint32_t nDims) {
 	x->nPoints = 0;
-	VecClear(&x->Training, nDims);
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-	VecClear(&x->cTraining, nDims);
-#endif
+	TCluster_ClearTrainingVector(x, nDims);
 }
 
 //! Train cluster on data
 static inline void TrainCluster(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-	VecSum(&x->Training, Data, &x->cTraining, nDims);
-#else
-	VecSum(&x->Training, Data, nDims);
-#endif
+	TCluster_AddToTraining(x, Data, nDims);
 	x->nPoints++;
 }
 
@@ -94,16 +72,19 @@ static uint8_t ResolveCluster(
 	//! Resolve for the centroid
 	uint32_t nPoints = Cluster->nPoints;
 	if(nPoints == 0) return 0;
-	VecCopy(&Cluster->Centroid, &Cluster->Training, nDims);
-	VecDivi(&Cluster->Centroid, (float)nPoints, nDims);
+	TCluster_ResolveCentroid(Cluster, nDims);
 
 	//! Recalculate distortion
+	//! Note that MaxDistVal stores the average between the average
+	//! distortion, and the peak distortion. This generally reduces
+	//! the chances of overfitting, while still giving a clearer idea
+	//! of which cluster needs splitting most urgently.
 	uint32_t Prev = CLUSTER_END_OF_LIST, Next = Cluster->FirstDataIdx;
 	uint32_t PeakDistIdx = CLUSTER_END_OF_LIST, PeakDistIdxPrev = CLUSTER_END_OF_LIST;
 	float    PeakDistVal = 0.0f;
 	float    TotalDist   = 0.0f;
 	while(Next != CLUSTER_END_OF_LIST) {
-		float Dist = VecDist2(Data + Next*nDims, &Cluster->Centroid, nDims);
+		float Dist = TCluster_Dist2ToCentroid(Cluster, Data + Next*nDims, nDims);
 		if(Dist > PeakDistVal) {
 			PeakDistIdx = Next, PeakDistIdxPrev = Prev;
 			PeakDistVal = Dist;
@@ -113,7 +94,8 @@ static uint8_t ResolveCluster(
 		Next = ClusterListIndices[Next];
 	}
 	Cluster->MaxDistIdx = PeakDistIdx, Cluster->MaxDistIdxPrev = PeakDistIdxPrev;
-	Cluster->TotalDist  = TotalDist / (float)nPoints;
+	Cluster->MaxDistVal = PeakDistVal + (TotalDist / (float)nPoints);
+	Cluster->TotalDist  = TotalDist;
 	return 1;
 }
 
@@ -125,7 +107,6 @@ static void SplitCluster(
 	const TClusterData_t *Data,
 	uint32_t *ClusterListIndices,
 	uint32_t *DistClusterHead,
-	float     nPointsLambda,
 	uint32_t nDims
 ) {
 	TCluster_t *SrcCluster = &Clusters[SrcClusterIdx];
@@ -133,21 +114,9 @@ static void SplitCluster(
 
 	//! Create a new cluster from the most distorted point - this helps
 	//! us make it out of a local optimum into a better cluster fit.
+	TCluster_SetCentroidToData(DstCluster, Data + SrcCluster->MaxDistIdx*nDims, nDims);
 	DstCluster->FirstDataIdx = CLUSTER_END_OF_LIST;
-	VecSet(&DstCluster->Centroid, Data + SrcCluster->MaxDistIdx*nDims, nDims);
 	ClearTraining(DstCluster, nDims);
-
-	//! Remove the entry from SrcCluster and insert it into DstCluster
-	//! NOTE: Do not recalculate the centroid of SrcCluster without the
-	//! entry we split out. This is because we want to keep its slight
-	//! bias towards DstCluster as we split, or we risk overfitting.
-	{
-		uint32_t Prev = SrcCluster->MaxDistIdxPrev;
-		uint32_t Next = SrcCluster->MaxDistIdx;
-		RemoveFromList(Prev, ClusterListIndices[Next], &SrcCluster->FirstDataIdx, ClusterListIndices);
-		InsertAtListHead(Next, &DstCluster->FirstDataIdx, ClusterListIndices);
-		TrainCluster(DstCluster, Data + Next*nDims, nDims);
-	}
 
 	//! Now re-cluster the data points that fell into the source cluster
 	uint32_t Prev = CLUSTER_END_OF_LIST;
@@ -159,8 +128,8 @@ static void SplitCluster(
 
 		//! Decide whether to use the original cluster or the newly-created one
 		const TClusterData_t *ThisData = Data + Idx*nDims;
-		float DistSrc = VecDist2(ThisData, &SrcCluster->Centroid, nDims);
-		float DistDst = VecDist2(ThisData, &DstCluster->Centroid, nDims);
+		float DistSrc = TCluster_Dist2ToCentroid(SrcCluster, ThisData, nDims);
+		float DistDst = TCluster_Dist2ToCentroid(DstCluster, ThisData, nDims);
 		if(DistSrc < DistDst) {
 			Prev = Idx;
 			TrainCluster(SrcCluster, ThisData, nDims);
@@ -180,12 +149,11 @@ static void SplitCluster(
 	//! very few points to a cluster, even if that increases the
 	//! error for other clusters significantly).
 	(void)DistClusterHead;
-	(void)nPointsLambda;
 	if(ResolveCluster(SrcCluster, Data, ClusterListIndices, nDims)) {
-		//InsertToDistortedClusterList(Clusters, SrcClusterIdx, DistClusterHead, nPointsLambda);
+		//InsertToDistortedClusterList(Clusters, SrcClusterIdx, DistClusterHead);
 	}
 	if(ResolveCluster(DstCluster, Data, ClusterListIndices, nDims)) {
-		//InsertToDistortedClusterList(Clusters, DstClusterIdx, DistClusterHead, nPointsLambda);
+		//InsertToDistortedClusterList(Clusters, DstClusterIdx, DistClusterHead);
 	}
 }
 
@@ -216,7 +184,7 @@ static inline uint32_t TClusterize_Process(
 		TrainCluster(&Clusters[0], &Data[n], nDims);
 	}
 	ResolveCluster(&Clusters[0], Data, ClusterListIndices, nDims);
-	InsertToDistortedClusterList(Clusters, 0, &DistClusterHead, 0.0f);
+	InsertToDistortedClusterList(Clusters, 0, &DistClusterHead);
 
 	//! Now begin splitting the most distorted clusters until we
 	//! have the desired number of output clusters. Note that
@@ -225,8 +193,6 @@ static inline uint32_t TClusterize_Process(
 	//! achieved perfect results and don't need to split).
 	float LastSplitDist = Clusters[0].TotalDist;
 	if(LastSplitDist != 0.0f) while(nCurrentClusters < nClusters) {
-		float nPointsLambda = LastSplitDist;
-
 		//! Split the most distorted clusters out
 		//! We can split as many times as we want here, with
 		//! N=1..nClusters-1. In general, N=1 gives the best
@@ -261,7 +227,6 @@ static inline uint32_t TClusterize_Process(
 				Data,
 				ClusterListIndices,
 				&DistClusterHead,
-				nPointsLambda,
 				nDims
 			);
 		}
@@ -279,7 +244,7 @@ static inline uint32_t TClusterize_Process(
 				uint32_t BestIdx  = 0;
 				float    BestDist = INFINITY;
 				for(k=0;k<nCurrentClusters;k++) {
-					float Dist = VecDist2(Data + n*nDims, &Clusters[k].Centroid, nDims);
+					float Dist = TCluster_Dist2ToCentroid(&Clusters[k], Data + n*nDims, nDims);
 					if(Dist < BestDist) {
 						BestIdx  = k;
 						BestDist = Dist;
@@ -295,7 +260,7 @@ static inline uint32_t TClusterize_Process(
 			for(k=0;k<nCurrentClusters;k++) {
 				if(ResolveCluster(&Clusters[k], Data, ClusterListIndices, nDims)) {
 					//! If the cluster resolves, update the distortion linked list
-					InsertToDistortedClusterList(Clusters, k, &DistClusterHead, nPointsLambda);
+					InsertToDistortedClusterList(Clusters, k, &DistClusterHead);
 				} else {
 					//! No resolve - append to empty-cluster linked list
 					InsertToEmptyClusterList(Clusters, k, &EmptyClusterHead);
@@ -313,16 +278,13 @@ static inline uint32_t TClusterize_Process(
 					Data,
 					ClusterListIndices,
 					&DistClusterHead,
-					nPointsLambda,
 					nDims
 				);
 			}
 
 			//! Calculate global distortion and early exit
 			float ThisPassDist = 0.0f;
-			for(k=0;k<nCurrentClusters;k++) {
-				ThisPassDist += Clusters[k].TotalDist * (float)Clusters[k].nPoints;
-			}
+			for(k=0;k<nCurrentClusters;k++) ThisPassDist += Clusters[k].TotalDist;
 			ThisPassDist /= (float)nDataPoints;
 			if(ThisPassDist == 0.0f || ThisPassDist >= LastPassDist) {
 				LastPassDist = ThisPassDist;
