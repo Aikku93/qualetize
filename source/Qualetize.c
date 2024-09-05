@@ -12,10 +12,9 @@
 #define CLAMP(x, Min, Max) ((x) < (Min) ? (Min) : (x) > (Max) ? (Max) : (x))
 /************************************************/
 
-//! Tiles are clustered in twelve dimensions: Four channels each
-//! for the mean, and the colours with minimum/maximum eigenvalues
-//! along the principal axis.
-#define TILE_CLUSTER_DIMENSIONS 12
+//! Tiles are clustered in eight dimensions: Four channels each
+//! for the mean, and another four for the standard deviation.
+#define TILE_CLUSTER_DIMENSIONS 8
 
 //! Default number of clustering passes
 //! When using these values, these refer to the number of passes over
@@ -68,9 +67,12 @@ uint8_t CalculateTileColourMatrix(
 	uint32_t InputHeight,
 	const struct QualetizePlan_t *Plan
 ) {
-	uint32_t n, k;
+	uint32_t n;
 
-	//! Convert colours to CIELAB space and check opacity
+	//! Convert colours to LAB space, find the mean, and check opacity
+	//! NOTE: For some reason, it is EXTREMELY important that processing
+	//! at this stage is done in CIELAB. Any other colourspace (including
+	//! Oklab) fail dramatically here, and I have no idea why.
 	uint32_t x, y;
 	uint8_t  HasNonZeroAlpha = 0;
 	uint32_t nSampledPoints  = 0;
@@ -94,68 +96,25 @@ uint8_t CalculateTileColourMatrix(
 	//! palette colour, then we can skip processing this tile
 	if(Plan->FirstColourIsTransparent && !HasNonZeroAlpha) return 0;
 
-	//! Calculate the principal axis for this tile, and then use it to
-	//! find the "span" of the colour range, to use for clustering
-	Vec4f_t MinPx = VEC4F_EMPTY;
-	Vec4f_t MaxPx = VEC4F_EMPTY; do {
-		//! Compute the covariance matrix K
-		//! This is symmetric, so we only need half the entries
-		float K[10];
-		for(n=0;n<10;n++) K[n] = 0.0f;
-		for(n=0;n<nSampledPoints;n++) {
-			Vec4f_t p = Vec4f_Sub(&PxBuffer[n], &Mean);
-			K[0] += p.f32[0]*p.f32[0];
-			K[1] += p.f32[0]*p.f32[1];
-			K[2] += p.f32[0]*p.f32[2];
-			K[3] += p.f32[0]*p.f32[3];
-			K[4] += p.f32[1]*p.f32[1];
-			K[5] += p.f32[1]*p.f32[2];
-			K[6] += p.f32[1]*p.f32[3];
-			K[7] += p.f32[2]*p.f32[2];
-			K[8] += p.f32[2]*p.f32[3];
-			K[9] += p.f32[3]*p.f32[3];
-		}
-
-		//! If the entire tile is a single colour, then use generic filler
-		if(K[0] == 0.0f && K[4] == 0.0f && K[7] == 0.0f && K[9] == 0.0f) {
-			MinPx = MaxPx = PxBuffer[0];
-			break;
-		}
-
-		//! Use power iteration to find the principal axis
-		Vec4f_t Eigenvec = Vec4f_Broadcast(1.0f);
-		for(k=0;k<32;k++) {
-			Vec4f_t t = Eigenvec;
-			Eigenvec.f32[0] = K[0]*t.f32[0] + K[1]*t.f32[1] + K[2]*t.f32[2] + K[3]*t.f32[3];
-			Eigenvec.f32[1] = K[1]*t.f32[0] + K[4]*t.f32[1] + K[5]*t.f32[2] + K[6]*t.f32[3];
-			Eigenvec.f32[2] = K[2]*t.f32[0] + K[5]*t.f32[1] + K[7]*t.f32[2] + K[8]*t.f32[3];
-			Eigenvec.f32[3] = K[3]*t.f32[0] + K[6]*t.f32[1] + K[8]*t.f32[2] + K[9]*t.f32[3];
-			Eigenvec = Vec4f_Divi(&Eigenvec, Vec4f_Length(&Eigenvec));
-		}
-
-		//! Now transform the pixels to find the "minimum" and "maximum"
-		float MinPxVal = +INFINITY;
-		float MaxPxVal = -INFINITY;
-		for(n=0;n<nSampledPoints;n++) {
-			float d = Vec4f_Dot(&PxBuffer[n], &Eigenvec);
-			if(d < MinPxVal) { MinPx = PxBuffer[n], MinPxVal = d; }
-			if(d > MaxPxVal) { MaxPx = PxBuffer[n], MaxPxVal = d; }
-		}
-	} while(0);
+	//! Calculate the variance, and thus the SD
+	Vec4f_t Var = VEC4F_EMPTY;
+	for(n=0;n<nSampledPoints;n++) {
+		Vec4f_t d = Vec4f_Sub(&PxBuffer[n], &Mean);
+		d = Vec4f_Mul(&d, &d);
+		Var = Vec4f_Add(&Var, &d);
+	}
+	Var = Vec4f_Divi(&Var, (float)nSampledPoints);
+	Var = Vec4f_Sqrt(&Var);
 
 	//! Fill the tile matrix data
-	TileMatrix[ 0] = Mean.f32[0];
-	TileMatrix[ 1] = Mean.f32[1];
-	TileMatrix[ 2] = Mean.f32[2];
-	TileMatrix[ 3] = Mean.f32[3];
-	TileMatrix[ 4] = MinPx.f32[0];
-	TileMatrix[ 5] = MinPx.f32[1];
-	TileMatrix[ 6] = MinPx.f32[2];
-	TileMatrix[ 7] = MinPx.f32[3];
-	TileMatrix[ 8] = MaxPx.f32[0];
-	TileMatrix[ 9] = MaxPx.f32[1];
-	TileMatrix[10] = MaxPx.f32[2];
-	TileMatrix[11] = MaxPx.f32[3];
+	TileMatrix[0] = Mean.f32[0];
+	TileMatrix[1] = Mean.f32[1];
+	TileMatrix[2] = Mean.f32[2];
+	TileMatrix[3] = Mean.f32[3];
+	TileMatrix[4] = Var.f32[0];
+	TileMatrix[5] = Var.f32[1];
+	TileMatrix[6] = Var.f32[2];
+	TileMatrix[7] = Var.f32[3];
 	return 1;
 }
 
@@ -171,9 +130,9 @@ static int CompareHueAscending(const void *a_, const void *b_) {
 //! Compare luma
 static inline float LumaFromRGB(const Vec4f_t *x) {
 	//! This just uses the luma calculation from YCbCr, in linear RGB
-	float r = (x->f32[0] > 0.0f) ? pow(x->f32[0], 2.4f) : 0.0f;
-	float g = (x->f32[1] > 0.0f) ? pow(x->f32[1], 2.4f) : 0.0f;
-	float b = (x->f32[2] > 0.0f) ? pow(x->f32[2], 2.4f) : 0.0f;
+	float r = (x->f32[0] > 0.0f) ? powf(x->f32[0], 2.4f) : 0.0f;
+	float g = (x->f32[1] > 0.0f) ? powf(x->f32[1], 2.4f) : 0.0f;
+	float b = (x->f32[2] > 0.0f) ? powf(x->f32[2], 2.4f) : 0.0f;
 	return cbrtf(0.2126f*r + 0.71520f*g + 0.0722f*b) * x->f32[3];
 }
 static int CompareLumaAscending(const void *a_, const void *b_) {
@@ -267,9 +226,6 @@ uint8_t Qualetize(
 			uint32_t TilesClusterSize  = Plan->nTilePalettes   * sizeof(struct Cluster_t);
 			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
 			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
-#endif
 			if(ColourClusterSize > TilesClusterSize) {
 				ClustersDataSize = ColourClusterSize;
 			} else {
@@ -413,11 +369,8 @@ uint8_t Qualetize(
 		uint32_t k;
 		float *NextPtr = (float*)(TileClusters + Plan->nTilePalettes);
 		for(k=0;k<Plan->nTilePalettes;k++) {
-			TileClusters[k].Centroid  = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
-			TileClusters[k].Training  = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
-#if CLUSTER_USE_COMPENSATED_SUMMATION
-			TileClusters[k].cTraining = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
-#endif
+			TileClusters[k].Centroid = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
+			TileClusters[k].Training = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
 		}
 
 		//! Perform actual clustering now
