@@ -74,36 +74,63 @@ uint8_t CalculateTileColourMatrix(
 	//! at this stage is done in CIELAB. Any other colourspace (including
 	//! Oklab) fail dramatically here, and I have no idea why.
 	uint32_t x, y;
-	uint8_t  HasNonZeroAlpha = 0;
 	uint32_t nSampledPoints  = 0;
-	Vec4f_t  Mean = VEC4F_EMPTY;
+	Vec4f_t  Mean  = VEC4F_EMPTY;
+	float    AlphaW = 0.0f;
 	for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
 		uint32_t vx = TileX*Plan->TileWidth  + x;
 		uint32_t vy = TileY*Plan->TileHeight + y;
 		if(vx < InputWidth && vy < InputHeight) {
 			uint32_t PxOffs = vy*InputWidth + vx;
 			Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], COLOURSPACE_CIELAB);
-			if(Px.f32[3] != 0.0f) HasNonZeroAlpha = 1;
 			if(!Plan->FirstColourIsTransparent || Px.f32[3] != 0.0f) {
 				Mean = Vec4f_Add(&Mean, &Px);
+				AlphaW += Px.f32[3];
 				PxBuffer[nSampledPoints++] = Px;
 			}
 		}
 	}
-	Mean = Vec4f_Divi(&Mean, (float)nSampledPoints);
 
 	//! If tile is fully transparent AND we have a forced transparent
 	//! palette colour, then we can skip processing this tile
-	if(Plan->FirstColourIsTransparent && !HasNonZeroAlpha) return 0;
+	if(Plan->FirstColourIsTransparent && AlphaW == 0.0f) return 0;
+
+	//! Normalize the mean by dividing through the alpha sum on the
+	//! colour channels (the values are pre-multiplied), and alpha
+	//! is normalized as the average.
+	Mean.f32[0] /= AlphaW;
+	Mean.f32[1] /= AlphaW;
+	Mean.f32[2] /= AlphaW;
+	Mean.f32[3] /= (float)nSampledPoints;
 
 	//! Calculate the variance, and thus the SD
+	//! Note that because the mean was taken after division by alpha,
+	//! we must also divide the colours by alpha here before we do
+	//! any operations relating to this mean, then post-multiply by
+	//! alpha gain to get the correct weight.
 	Vec4f_t Var = VEC4F_EMPTY;
+	float vAlphaW = 0.0f;
 	for(n=0;n<nSampledPoints;n++) {
-		Vec4f_t d = Vec4f_Sub(&PxBuffer[n], &Mean);
-		d = Vec4f_Mul(&d, &d);
-		Var = Vec4f_Add(&Var, &d);
+		Vec4f_t p = PxBuffer[n];
+		if(p.f32[3] > 0.0f) {
+			p.f32[0] /= p.f32[3];
+			p.f32[1] /= p.f32[3];
+			p.f32[2] /= p.f32[3];
+			Vec4f_t d = Vec4f_Sub(&PxBuffer[n], &Mean);
+			d = Vec4f_Mul(&d, &d);
+			d.f32[0] *= p.f32[3];
+			d.f32[1] *= p.f32[3];
+			d.f32[2] *= p.f32[3];
+			Var = Vec4f_Add(&Var, &d);
+			vAlphaW += p.f32[3];
+		}
 	}
-	Var = Vec4f_Divi(&Var, (float)nSampledPoints);
+	if(vAlphaW) {
+		Var.f32[0] /= vAlphaW;
+		Var.f32[1] /= vAlphaW;
+		Var.f32[2] /= vAlphaW;
+		Var.f32[3] /= (float)nSampledPoints;
+	}
 	Var = Vec4f_Sqrt(&Var);
 
 	//! Fill the tile matrix data
