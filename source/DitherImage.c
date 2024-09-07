@@ -282,7 +282,7 @@ void DitherPaletteImage(
 	//! do not necessarily have a nominal range of 0.0 to 1.0. This may
 	//! cause issues at times, but hopefully this is minor.
 	uint32_t x, y;
-	uint32_t nTilesX = Width / TileWidth;
+	uint32_t nTilesX = (Width-1) / TileWidth + 1;
 	Vec4f_t SumRMSE = VEC4F_EMPTY;
 	for(y=0;y<Height;y++) {
 		//! Swap diffusion buffers and clear for the next line
