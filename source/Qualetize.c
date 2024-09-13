@@ -98,9 +98,11 @@ uint8_t CalculateTileColourMatrix(
 	//! Normalize the mean by dividing through the alpha sum on the
 	//! colour channels (the values are pre-multiplied), and alpha
 	//! is normalized as the average.
-	Mean.f32[0] /= AlphaW;
-	Mean.f32[1] /= AlphaW;
-	Mean.f32[2] /= AlphaW;
+	if(AlphaW != 0.0f) {
+		Mean.f32[0] /= AlphaW;
+		Mean.f32[1] /= AlphaW;
+		Mean.f32[2] /= AlphaW;
+	}
 	Mean.f32[3] /= (float)nSampledPoints;
 
 	//! Calculate the variance, and thus the SD
