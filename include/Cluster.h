@@ -21,8 +21,6 @@ struct Cluster_t {
 	uint32_t NextCluster;    //! Next cluster in list
 	uint32_t FirstDataIdx;   //! First data point assigned to this cluster
 	uint32_t MaxDistIdx;     //! Index of the most distorted data point
-	uint32_t MaxDistIdxPrev; //! Index previous to the most distorted data point
-	float    MaxDistVal;     //! Distortion of most distorted data point
 	float    TotalDist;      //! Sum of distortion of all data points in this cluster
 	float   *Centroid;       //! Centroid of cluster
 	float   *Training;       //! Training summation
@@ -40,8 +38,6 @@ Cluster_Vec4f_t {
 	uint32_t NextCluster;
 	uint32_t FirstDataIdx;
 	uint32_t MaxDistIdx;
-	uint32_t MaxDistIdxPrev;
-	float    MaxDistVal;
 	float    TotalDist;
 	Vec4f_t  Centroid;
 	Vec4f_t  Training;
