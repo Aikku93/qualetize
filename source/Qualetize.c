@@ -136,6 +136,11 @@ uint8_t CalculateTileColourMatrix(
 	Var = Vec4f_Sqrt(&Var);
 
 	//! Fill the tile matrix data
+	//! Note that variance gets a higher weight than the mean. This
+	//! generally reduces PSNR, but reduces the chance of blocking
+	//! artifacts around tile boundaries, by preserving the dynamic
+	//! range of each tile to avoid harsh discontinuities.
+	Var = Vec4f_Muli(&Var, 1.5f);
 	TileMatrix[0] = Mean.f32[0];
 	TileMatrix[1] = Mean.f32[1];
 	TileMatrix[2] = Mean.f32[2];
