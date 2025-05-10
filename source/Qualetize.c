@@ -12,9 +12,8 @@
 #define CLAMP(x, Min, Max) ((x) < (Min) ? (Min) : (x) > (Max) ? (Max) : (x))
 /************************************************/
 
-//! Tiles are clustered in eight dimensions: Four channels each
-//! for the mean, and another four for the standard deviation.
-#define TILE_CLUSTER_DIMENSIONS 8
+//! Maximum iterations for geometric median
+#define MAX_MEDIAN_ITERS 32
 
 //! Default number of clustering passes
 //! When using these values, these refer to the number of passes over
@@ -54,11 +53,11 @@ static BGRA8_t Vec4fRGBA_To_BGRA8(const Vec4f_t *x) {
 
 /************************************************/
 
-//! Calculate the correlation matrix of a tile
+//! Calculate the colour value of a tile
 //! Note that PxBuffer[] must be able to hold TileWidth*TileHeight
 //! elements, since we use this is a scratch buffer for conversion.
-uint8_t CalculateTileColourMatrix(
-	float *TileMatrix,
+uint8_t CalculateTileColourValue(
+	Vec4f_t *TileValue,
 	Vec4f_t *PxBuffer,
 	const Vec4f_t *InputPxData,
 	uint32_t TileX,
@@ -70,9 +69,8 @@ uint8_t CalculateTileColourMatrix(
 	uint32_t n;
 
 	//! Convert colours to LAB space, find the mean, and check opacity
-	//! NOTE: For some reason, it is EXTREMELY important that processing
-	//! at this stage is done in CIELAB. Any other colourspace (including
-	//! Oklab) fail dramatically here, and I have no idea why.
+	//! CIELab works best for this. Oklab works too, but seems to have
+	//! issues in areas containing large colour transitions.
 	uint32_t x, y;
 	uint32_t nSampledPoints  = 0;
 	Vec4f_t  Mean  = VEC4F_EMPTY;
@@ -105,50 +103,41 @@ uint8_t CalculateTileColourMatrix(
 	}
 	Mean.f32[3] /= (float)nSampledPoints;
 
-	//! Calculate the variance, and thus the SD
-	//! Note that because the mean was taken after division by alpha,
-	//! we must also divide the colours by alpha here before we do
-	//! any operations relating to this mean, then post-multiply by
-	//! alpha gain to get the correct weight.
-	Vec4f_t Var = VEC4F_EMPTY;
-	float vAlphaW = 0.0f;
-	for(n=0;n<nSampledPoints;n++) {
-		Vec4f_t p = PxBuffer[n];
-		if(p.f32[3] > 0.0f) {
-			p.f32[0] /= p.f32[3];
-			p.f32[1] /= p.f32[3];
-			p.f32[2] /= p.f32[3];
-			Vec4f_t d = Vec4f_Sub(&PxBuffer[n], &Mean);
-			d = Vec4f_Mul(&d, &d);
-			d.f32[0] *= p.f32[3];
-			d.f32[1] *= p.f32[3];
-			d.f32[2] *= p.f32[3];
-			Var = Vec4f_Add(&Var, &d);
-			vAlphaW += p.f32[3];
+	//! Calculate an approximate geometric median of the data
+	//! I /think/ I derived this algorithm from here:
+	//!   The multivariate L1-median and associated data depth
+	//!   DOI: 10.1073/pnas.97.4.1423
+	//! ... but I honestly can't even remember. I know I did
+	//! implement it at one point, and it looked similar to
+	//! the following code, but I can't remember it exactly.
+	uint32_t Iter;
+	Vec4f_t Median = Mean;
+	for(Iter=0;Iter<MAX_MEDIAN_ITERS;Iter++) {
+		Vec4f_t MedianSum = VEC4F_EMPTY;
+		float SumW = 0.0f, NullsW = 0.0f;
+		for(n=0;n<nSampledPoints;n++) {
+			float d = Vec4f_Dist2(&PxBuffer[n], &Median);
+			if(d > 1.0e-10f) {
+				float w = 1.0f / sqrtf(d);
+				Vec4f_t xn = Vec4f_Muli(&PxBuffer[n], w);
+				MedianSum = Vec4f_Add(&MedianSum, &xn);
+				SumW += w;
+			} else NullsW += 1.0f;
 		}
-	}
-	if(vAlphaW) {
-		Var.f32[0] /= vAlphaW;
-		Var.f32[1] /= vAlphaW;
-		Var.f32[2] /= vAlphaW;
-		Var.f32[3] /= (float)nSampledPoints;
-	}
-	Var = Vec4f_Sqrt(&Var);
+		if(SumW == 0.0f) break;
 
-	//! Fill the tile matrix data
-	//! Note that variance gets a higher weight than the mean. This
-	//! generally reduces PSNR, but reduces the chance of blocking
-	//! artifacts around tile boundaries, by preserving the dynamic
-	//! range of each tile to avoid harsh discontinuities.
-	Var = Vec4f_Muli(&Var, 1.5f);
-	TileMatrix[0] = Mean.f32[0];
-	TileMatrix[1] = Mean.f32[1];
-	TileMatrix[2] = Mean.f32[2];
-	TileMatrix[3] = Mean.f32[3];
-	TileMatrix[4] = Var.f32[0];
-	TileMatrix[5] = Var.f32[1];
-	TileMatrix[6] = Var.f32[2];
-	TileMatrix[7] = Var.f32[3];
+		float a = NullsW / (float)nSampledPoints;
+		Vec4f_t  NewMedian = Vec4f_Divi(&MedianSum, SumW);
+		Vec4f_t wNewMedian = Vec4f_Muli(&NewMedian, 1.0f-a);
+		Vec4f_t wOldMedian = Vec4f_Muli(&Median,    a);
+		         NewMedian = Vec4f_Add(&wNewMedian, &wOldMedian);
+		float d = Vec4f_Dist2(&NewMedian, &Median);
+		Median = NewMedian;
+		if(d < 1.0e-10f) break;
+	}
+
+	//! Fill the tile data
+	*TileValue = Median;
 	return 1;
 }
 
@@ -219,12 +208,11 @@ uint8_t Qualetize(
 	//! palette indices by combining with the clustered colour from the palette.
 	uint8_t *TilePaletteIndices;
 
-	//! Colour matrices for tile clustering.
+	//! Colour data for tile clustering.
 	//! Contains (ImageWidth/TileWidth)*(ImageHeight/TileHeight) elements.
 	//! These values are used for clustering the tiles into their appropriate
-	//! palettes. Note that these are NOT Vec4f_t, but rather float[N] to
-	//! instead store different attributes to optimize.
-	float *TileColourMatrices;
+	//! palettes.
+	Vec4f_t *TileColourValues;
 
 	//! Pixel data for cluster processing (used to store lists of colours to cluster).
 	//! Contains up to ImageWidth*ImageHeight elements.
@@ -234,14 +222,13 @@ uint8_t Qualetize(
 	Vec4f_t *ColourClusterBuffer;
 
 	//! Tile clusters for clustering tiles together.
-	//! Contains nTilePalettes elements, plus extra memory for storing the cluster
-	//! vectors {Centroid,Training,cTraining}.
+	//! Contains nTilePalettes elements
 	//! ---
 	//! This pointer is aliased by ColourClusters, explained below:
 	//! ---
 	//! Colour clusters for clustering tile colours together into a palette.
 	//! Contains nPaletteColours elements.
-	struct Cluster_t       *TileClusters;
+	struct Cluster_Vec4f_t *TileClusters;
 	struct Cluster_Vec4f_t *ColourClusters;
 
 	//! Cluster indices for linked-list offsets
@@ -254,12 +241,8 @@ uint8_t Qualetize(
 		uint32_t AllocSize = 0;
 		uint32_t TotalPalCols = Plan->nPaletteColours * Plan->nTilePalettes;
 		uint32_t ClustersDataSize; {
-			//! NOTE: We have to manually allocate space for Centroid[],
-			//! Training[], and cTraining[] for the tile clusters.
 			uint32_t ColourClusterSize = Plan->nPaletteColours * sizeof(struct Cluster_Vec4f_t);
-			uint32_t TilesClusterSize  = Plan->nTilePalettes   * sizeof(struct Cluster_t);
-			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
-			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
+			uint32_t TilesClusterSize  = Plan->nTilePalettes   * sizeof(struct Cluster_Vec4f_t);
 			if(ColourClusterSize > TilesClusterSize) {
 				ClustersDataSize = ColourClusterSize;
 			} else {
@@ -276,7 +259,7 @@ uint8_t Qualetize(
 		CREATE_BUFFER(TilePxData,          nPxTotal     * sizeof(Vec4f_t));
 		CREATE_BUFFER(PaletteData,         TotalPalCols * sizeof(Vec4f_t));
 		CREATE_BUFFER(TilePaletteIndices,  nTilesTotal  * sizeof(uint8_t));
-		CREATE_BUFFER(TileColourMatrices,  nTilesTotal  * sizeof(float)*TILE_CLUSTER_DIMENSIONS);
+		CREATE_BUFFER(TileColourValues,    nTilesTotal  * sizeof(Vec4f_t));
 		CREATE_BUFFER(ColourClusterBuffer, nPxTotal     * sizeof(Vec4f_t));
 		CREATE_BUFFER(ClustersData,        ClustersDataSize);
 		CREATE_BUFFER(ClusterListIndices,  nPxTotal     * sizeof(uint32_t));
@@ -301,9 +284,9 @@ uint8_t Qualetize(
 		ASSIGN_BUFFER(TilePxData,  Vec4f_t);
 		ASSIGN_BUFFER(PaletteData, Vec4f_t);
 		ASSIGN_BUFFER(TilePaletteIndices,  uint8_t);
-		ASSIGN_BUFFER(TileColourMatrices,  float);
+		ASSIGN_BUFFER(TileColourValues,    Vec4f_t);
 		ASSIGN_BUFFER(ColourClusterBuffer, Vec4f_t);
-		ASSIGN_BUFFER_FROM(TileClusters,   struct Cluster_t,       ClustersData_Offs);
+		ASSIGN_BUFFER_FROM(TileClusters,   struct Cluster_Vec4f_t, ClustersData_Offs);
 		ASSIGN_BUFFER_FROM(ColourClusters, struct Cluster_Vec4f_t, ClustersData_Offs);
 		ASSIGN_BUFFER(ClusterListIndices,  uint32_t);
 #undef ASSIGN_BUFFER
@@ -311,9 +294,9 @@ uint8_t Qualetize(
 	}
 
 	//! Read the image data into the native format and write tile pixels
-	//! NOTE: BlankTilesIndices aliases near the end of TileColourMatrices[];
+	//! NOTE: BlankTilesIndices aliases near the end of TileColourValues[];
 	//! this is fine, however, as that memory won't be reached.
-	uint32_t *BlankTileIndices = (uint32_t*)(TileColourMatrices + nTilesTotal*TILE_CLUSTER_DIMENSIONS);
+	uint32_t *BlankTileIndices = (uint32_t*)(TileColourValues + nTilesTotal);
 	const uint32_t *BlankTileIndicesEnd = BlankTileIndices;
 	uint32_t nNonBlankTiles = 0; {
 		uint32_t n;
@@ -364,11 +347,11 @@ uint8_t Qualetize(
 			uint32_t TileIdx = ty*nTilesX + tx;
 			Vec4f_t *ThisTilePxData = TilePxData + TileIdx*nPxPerTile;
 
-			//! Calculate this tile's matrix (for tile clustering) from
+			//! Calculate this tile's value (for tile clustering) from
 			//! the SOURCE image, not the bit-crushed version. This can
 			//! help to add more detail or "context" for clustering.
-			if(CalculateTileColourMatrix(
-				TileColourMatrices + nNonBlankTiles*TILE_CLUSTER_DIMENSIONS,
+			if(CalculateTileColourValue(
+				TileColourValues + nNonBlankTiles,
 				ThisTilePxData,
 				InputPxData,
 				tx,
@@ -399,28 +382,19 @@ uint8_t Qualetize(
 
 	//! Cluster tiles together by palette
 	if(Plan->nTilePalettes > 1) {
-		//! Setup the cluster pointers
-		uint32_t k;
-		float *NextPtr = (float*)(TileClusters + Plan->nTilePalettes);
-		for(k=0;k<Plan->nTilePalettes;k++) {
-			TileClusters[k].Centroid = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
-			TileClusters[k].Training = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
-		}
-
 		//! Perform actual clustering now
 		uint32_t TileClusterPasses = Plan->nTileClusterPasses;
 		if(!TileClusterPasses) TileClusterPasses = DEFAULT_TILECLUSTER_PASSES / Plan->nTilePalettes;
-		Clusterize_Process(
+		Clusterize_Vec4f_Process(
 			TileClusters,
-			TileColourMatrices,
-			TILE_CLUSTER_DIMENSIONS,
+			TileColourValues,
 			Plan->nTilePalettes,
 			nNonBlankTiles,
 			ClusterListIndices,
 			TileClusterPasses,
 			0.0f
 		);
-		Clusterize_GetClusterIndices_u8(
+		Clusterize_Vec4f_GetClusterIndices_u8(
 			TilePaletteIndices,
 			TileClusters,
 			Plan->nTilePalettes,
