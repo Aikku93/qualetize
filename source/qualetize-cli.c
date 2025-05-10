@@ -107,7 +107,7 @@ int main(int argc, const char *argv[]) {
 			"                         by the alpha value, 32-bit BMP files generally do not.\n"
 			"                         Note that if this option is set to `y`, then output\n"
 			"                         colours in the palette will also be pre-multiplied.\n"
-			"  -colspace:ycbcr-psy  - Set colourspace\n"
+			"  -colspace:oklab      - Set colourspace\n"
 			"                         Different colourspaces may give better/worse results\n"
 			"                         depending on the input image, and it may be necessary\n"
 			"                         to experiment to find the optimal one.\n"
@@ -175,7 +175,7 @@ int main(int argc, const char *argv[]) {
 	Plan.DitherInputLevel     = 0;
 	Plan.DitherOutputType     = DITHER_FLOYDSTEINBERG;
 	Plan.DitherOutputLevel    = 0x8000;
-	Plan.Colourspace          = COLOURSPACE_YCBCR_PSY;
+	Plan.Colourspace          = COLOURSPACE_OKLAB;
 	Plan.nTileClusterPasses   = 0;
 	Plan.nColourClusterPasses = 0;
 	Plan.ColourDepth          = (Vec4f_t){{31,31,31,1}};
