@@ -59,8 +59,7 @@ uint32_t Clusterize_Process(
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses,
-	float AvgErrorThreshold
+	uint32_t nPasses
 );
 uint32_t Clusterize_Vec4f_Process(
 	struct Cluster_Vec4f_t *Clusters,
@@ -68,8 +67,7 @@ uint32_t Clusterize_Vec4f_Process(
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses,
-	float AvgErrorThreshold
+	uint32_t nPasses
 );
 
 //! Get cluster indices from clusters and data lists (uint8_t)

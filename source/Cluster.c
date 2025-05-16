@@ -57,8 +57,7 @@ uint32_t Clusterize_Process(
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses,
-	float AvgErrorThreshold
+	uint32_t nPasses
 ) {
 	return TClusterize_Process(
 		Clusters,
@@ -67,7 +66,6 @@ uint32_t Clusterize_Process(
 		nDataPoints,
 		ClusterListIndices,
 		nPasses,
-		AvgErrorThreshold,
 		nDims
 	);
 }

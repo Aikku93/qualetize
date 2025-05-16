@@ -391,8 +391,7 @@ uint8_t Qualetize(
 			Plan->nTilePalettes,
 			nNonBlankTiles,
 			ClusterListIndices,
-			TileClusterPasses,
-			0.0f
+			TileClusterPasses
 		);
 		Clusterize_Vec4f_GetClusterIndices_u8(
 			TilePaletteIndices,
@@ -467,8 +466,7 @@ uint8_t Qualetize(
 				nOutputColours,
 				DataCnt,
 				ClusterListIndices,
-				ColourClusterPasses,
-				0.0f
+				ColourClusterPasses
 			);
 			for(n=nOutputClusters;n<nOutputColours;n++) {
 				ColourClusters[n].Centroid = UnusedColour;
@@ -513,8 +511,7 @@ uint8_t Qualetize(
 				nOutputColours,
 				nOutputColours,
 				ClusterListIndices,
-				PALETTE_SORT_PASSES,
-				0.0f
+				PALETTE_SORT_PASSES
 			);
 
 			//! Sort the clusters by hue

@@ -95,7 +95,6 @@ static inline uint32_t TClusterize_Process(
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
 	uint32_t nPasses,
-	float AvgErrorThreshold,
 	uint32_t nDims
 ) {
 	uint32_t n, k;
@@ -115,7 +114,6 @@ static inline uint32_t TClusterize_Process(
 	InsertToDistortedClusterList(Clusters, 0, &DistClusterHead);
 
 	//! Begin creating additional clusters
-	float LastSplitDist = Clusters[0].TotalDist;
 	while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST) {
 		//! Create new cluster from the most distorted data point
 		//! Note that we are splitting out the most distorted point
@@ -151,6 +149,7 @@ static inline uint32_t TClusterize_Process(
 			}
 
 			//! Resolve all clusters
+			uint8_t Resolved = 1;
 			float ThisPassDist = 0.0f;
 			DistClusterHead  = CLUSTER_END_OF_LIST, DistClusterHead = CLUSTER_END_OF_LIST;
 			EmptyClusterHead = CLUSTER_END_OF_LIST;
@@ -162,6 +161,7 @@ static inline uint32_t TClusterize_Process(
 				} else {
 					//! No resolve - append to empty-cluster linked list
 					InsertToEmptyClusterList(Clusters, k, &EmptyClusterHead);
+					Resolved = 0;
 				}
 			}
 
@@ -172,24 +172,18 @@ static inline uint32_t TClusterize_Process(
 				TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
 			}
 
-			//! If we're still in the initialization stage, stop once we
-			//! are getting too close to convergence, as we do not want
-			//! this to happen just yet.
-			if(nCurrentClusters < nClusters && ThisPassDist > 0.95f*LastPassDist) Pass = nPasses-1;
+			//! If we're still in the initialization stage, only perform
+			//! enough passes to ensure all clusters are filled. We need
+			//! all clusters filled because we will create new clusters
+			//! from the most distorted points in the next iteration.
+			if(nCurrentClusters < nClusters && Resolved && Pass >= nCurrentClusters) break;
 
 			//! Early exit on convergence
-			if(ThisPassDist == 0.0f || ThisPassDist >= LastPassDist) Pass = nPasses-1;
+			if(ThisPassDist == 0.0f || ThisPassDist >= LastPassDist) break;
 
 			//! Set up for next iteration
 			LastPassDist = ThisPassDist;
 		}
-
-		//! Early exit?
-		if(
-			LastPassDist <= (AvgErrorThreshold * (float)nDataPoints) ||
-			LastPassDist >= LastSplitDist
-		) break;
-		LastSplitDist = LastPassDist;
 	}
 	return nCurrentClusters;
 }
