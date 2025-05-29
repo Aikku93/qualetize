@@ -308,7 +308,10 @@ uint8_t Qualetize(
 			for(y=0;y<InputHeight;y++) for(x=0;x<InputWidth;x++) {
 				uint8_t Idx = Src[y*InputWidth+x];
 				BGRA8_t Col = (BGRA8_t){0,0,0,0};
-				if(Idx != 0 || !Plan->FirstColourIsTransparent) Col = InputPalette[Idx];
+				if(Idx != 0 || !Plan->FirstColourIsTransparent) {
+					Col = InputPalette[Idx];
+					Col.a = 255;
+				}
 				InputPxData[y*InputWidth+x] = BGRA8_To_Vec4fRGBA(&Col);
 			}
 		} else {
