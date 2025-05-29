@@ -106,6 +106,11 @@ uint8_t BmpCtx_FromFile(struct BmpCtx_t *Ctx, const char *Filename) {
 	Ctx->Width  = bmIH.Width;
 	Ctx->Height = bmIH.Height;
 
+	//! Check that file is not compressed
+	//! We only support BI_RGB (0) and BI_BITFIELDS (3),
+	//! and the latter we just blindly assume to be 8bit
+	if(bmIH.CompType != 0 && bmIH.CompType != 3) goto Exit;
+
 	//! Read pixels
 	if(bmFH.Type == ('B'|'M'<<8)) {
 		uint32_t nPx = Ctx->Width * Ctx->Height;
@@ -118,49 +123,51 @@ uint8_t BmpCtx_FromFile(struct BmpCtx_t *Ctx, const char *Filename) {
 				if(!fread(Ctx->Palette, BMP_PALETTE_COLOURS * sizeof(BGRA8_t), 1, File)) goto Exit;
 
 				//! Read pixels
+				//! Note that we need to skip any padding at end of rows
+				uint32_t y, RowPad = (-bmIH.Width) & 3;
 				fseek(File, bmFH.Offs, SEEK_SET);
-				Ctx->PxIdx = malloc(nPx * sizeof(uint8_t));
-				if(!Ctx->PxIdx) goto Exit;
-				if(!fread(Ctx->PxIdx, nPx * sizeof(uint8_t), 1, File)) goto Exit;
-
-				//! Unflip image
-				uint32_t y;
-				uint8_t *Mem = Ctx->PxIdx;
-				for(y=0;y<bmIH.Height/2;y++) {
-					SwapRange(Mem + y*bmIH.Width, Mem + (bmIH.Height-1-y)*bmIH.Width, bmIH.Width * sizeof(uint8_t));
+				uint8_t *Mem = Ctx->PxIdx = malloc(nPx * sizeof(uint8_t));
+				if(!Mem) goto Exit;
+				for(y=0;y<bmIH.Height;y++) {
+					if(!fread(
+						Mem + (bmIH.Height-1-y)*bmIH.Width,
+						bmIH.Width * sizeof(uint8_t),
+						1,
+						File
+					)) goto Exit;
+					fseek(File, RowPad, SEEK_CUR);
 				}
 			} break;
 
 			//! BGR
 			case 24: {
-				BGRA8_t *PxBGR = Ctx->PxBGR = malloc(nPx * sizeof(BGRA8_t));
-				if(!PxBGR) goto Exit;
+				//! Read pixels
+				//! Note that we need to skip any padding at end of rows
+				uint32_t x, y, RowPad = (-bmIH.Width*3) & 3;
+				fseek(File, bmFH.Offs, SEEK_SET);
+				BGRA8_t *Mem = Ctx->PxBGR = malloc(nPx * sizeof(BGRA8_t));
+				if(!Mem) goto Exit;
+				for(y=0;y<bmIH.Height;y++) {
+					BGRA8_t *Row = Mem + (bmIH.Height-1-y)*bmIH.Width;
+					for(x=0;x<bmIH.Width;x++) {
+						//! Read BGR
+						struct { uint8_t b, g, r; } p;
+						if(!fread(&p, 3, 1, File)) goto Exit;
 
-				//! Convert pixels
-				uint32_t n;
-				for(n=0;n<nPx;n++) {
-					//! Read BGR
-					struct { uint8_t b, g, r; } x;
-					if(!fread(&x, 3, 1, File)) goto Exit;
-
-					//! Store BGRA
-					PxBGR[n].b = x.b;
-					PxBGR[n].g = x.g;
-					PxBGR[n].r = x.r;
-					PxBGR[n].a = 255;
-				}
-
-				//! Unflip image
-				uint32_t y;
-				BGRA8_t *Mem = Ctx->PxBGR;
-				for(y=0;y<bmIH.Height/2;y++) {
-					SwapRange(Mem + y*bmIH.Width, Mem + (bmIH.Height-1-y)*bmIH.Width, bmIH.Width * sizeof(BGRA8_t));
+						//! Store BGRA
+						Row[x].b = p.b;
+						Row[x].g = p.g;
+						Row[x].r = p.r;
+						Row[x].a = 255;
+					}
+					fseek(File, RowPad, SEEK_CUR);
 				}
 			} break;
 
 			//! BGRA
 			case 32: {
 				//! Everything is prepared already, so straight read
+				fseek(File, bmFH.Offs, SEEK_SET);
 				Ctx->PxBGR = malloc(nPx * sizeof(BGRA8_t));
 				if(!Ctx->PxBGR) goto Exit;
 				if(!fread(Ctx->PxBGR, nPx * sizeof(BGRA8_t), 1, File)) goto Exit;
@@ -202,6 +209,7 @@ uint8_t BmpCtx_ToFile(const struct BmpCtx_t *Ctx, const char *Filename) {
 	if(!nPx || (!Ctx->PxBGR && !(Ctx->Palette && Ctx->PxIdx))) return 0;
 
 	//! Open file, write headers
+	uint32_t nPxPadded = (((Ctx->Width * (Ctx->Palette ? 1 : 4)) + 3) &~ 3) * Ctx->Height;
 	FILE *File = fopen(Filename, "wb");
 	if(!File) return 0;
 	memset(&bmFH, 0, sizeof(bmFH));
@@ -210,7 +218,7 @@ uint8_t BmpCtx_ToFile(const struct BmpCtx_t *Ctx, const char *Filename) {
 	bmFH.Size     = sizeof(struct BMFH_t) +
 		        sizeof(struct BMIH_t) +
 		        BMP_PALETTE_COLOURS * (Ctx->Palette ? sizeof(BGRA8_t) : 0) +
-		        nPx * (Ctx->Palette ? sizeof(uint8_t) : sizeof(BGRA8_t));
+		        nPxPadded * (Ctx->Palette ? sizeof(uint8_t) : sizeof(BGRA8_t));
 	bmFH.Offs     = sizeof(struct BMFH_t) + sizeof(struct BMIH_t) +
 		        BMP_PALETTE_COLOURS * (Ctx->Palette ? sizeof(BGRA8_t) : 0);
 	bmIH.Size     = sizeof(struct BMIH_t);
@@ -226,10 +234,11 @@ uint8_t BmpCtx_ToFile(const struct BmpCtx_t *Ctx, const char *Filename) {
 
 	//! Write pixels (and flip image for storage)
 	if(Ctx->Palette) {
-		uint32_t y;
+		uint32_t y, RowPad = (-Ctx->Width) & 3, Zero = 0;
 		const uint8_t *Mem = Ctx->PxIdx;
 		for(y=0;y<Ctx->Height;y++) {
 			if(!fwrite(Mem + (Ctx->Height-1-y)*Ctx->Width, Ctx->Width * sizeof(uint8_t), 1, File)) goto Exit;
+			if(RowPad && !fwrite(&Zero, RowPad, 1, File)) goto Exit;
 		}
 	} else {
 		uint32_t y;
