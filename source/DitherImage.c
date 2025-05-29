@@ -19,6 +19,33 @@ static uint8_t FindNearestColour(const Vec4f_t *x, const Vec4f_t *Pal, uint32_t 
 	}
 	return BestIdx;
 }
+static uint8_t FindNearestDitheredColour(const Vec4f_t *x, const Vec4f_t *Bias, const Vec4f_t *Pal, uint32_t nCols) {
+	uint32_t n;
+
+	//! Find closest two matches
+	uint8_t BestIdxA = 0, BestIdxB = 0;
+	float BestDistA = INFINITY;
+	float BestDistB = INFINITY;
+	for(n=0;n<nCols;n++) {
+		float Dist = Vec4f_Dist2(x, &Pal[n]);
+		if(Dist < BestDistA) {
+			BestIdxB  = BestIdxA;
+			BestDistB = BestDistA;
+			BestIdxA  = (uint8_t)n;
+			BestDistA = Dist;
+		} else if(Dist < BestDistB) {
+			BestIdxB  = (uint8_t)n;
+			BestDistB = Dist;
+		}
+	}
+
+	//! Scale the bias by their differences, and find closest match to this
+	Vec4f_t xNew = Vec4f_Sub(&Pal[BestIdxA], &Pal[BestIdxB]);
+	        xNew = Vec4f_Abs(&xNew);
+	        xNew = Vec4f_Mul(&xNew, Bias);
+	        xNew = Vec4f_Add(&xNew, x);
+	return FindNearestColour(&xNew, Pal, nCols);
+}
 
 //! Calculate checkered dithering offset
 static inline float CheckerDitherOffset(uint32_t x, uint32_t y) {
@@ -161,41 +188,6 @@ void DitherImage(
 
 /************************************************/
 
-//! Palette sorting routines (used for slope calculations)
-static int PaletteSort0(const void *a_, const void *b_) {
-	const Vec4f_t *a = (const Vec4f_t*)a_;
-	const Vec4f_t *b = (const Vec4f_t*)b_;
-	return (a->f32[0] < b->f32[0]) ? (-1) : (+1);
-}
-static int PaletteSort1(const void *a_, const void *b_) {
-	const Vec4f_t *a = (const Vec4f_t*)a_;
-	const Vec4f_t *b = (const Vec4f_t*)b_;
-	return (a->f32[1] < b->f32[1]) ? (-1) : (+1);
-}
-static int PaletteSort2(const void *a_, const void *b_) {
-	const Vec4f_t *a = (const Vec4f_t*)a_;
-	const Vec4f_t *b = (const Vec4f_t*)b_;
-	return (a->f32[2] < b->f32[2]) ? (-1) : (+1);
-}
-static int PaletteSort3(const void *a_, const void *b_) {
-	const Vec4f_t *a = (const Vec4f_t*)a_;
-	const Vec4f_t *b = (const Vec4f_t*)b_;
-	return (a->f32[3] < b->f32[3]) ? (-1) : (+1);
-}
-
-//! Compute weighted average slope of given data (calculated per channel)
-//! Assumes that input is sorted in ascending order
-static float GetAverageSlope(const Vec4f_t *Data, uint32_t N, uint32_t Idx) {
-	uint32_t n;
-	float Sum = 0.0f, SumW = 0.0f;
-	for(n=1;n<N;n++) {
-		float a = Data[n].f32[3] * Data[n-1].f32[3];
-		Sum  += (Data[n].f32[Idx] - Data[n-1].f32[Idx])*a;
-		SumW += a;
-	}
-	return (Sum != 0.0f) ? (Sum / SumW) : 0.0f;
-}
-
 //! Dither palettized, tiled image data
 void DitherPaletteImage(
 	      uint8_t *DstPx,
@@ -237,40 +229,6 @@ void DitherPaletteImage(
 			Diffuse_y2 = Diffuse_y1   + Width+2;
 			for(n=0;n<Width;n++) Diffuse_y1[n] = VEC4F_EMPTY;
 			for(n=0;n<Width;n++) Diffuse_y2[n] = VEC4F_EMPTY;
-		} else {
-			//! If we have no memory, disable dithering
-			DitherType = DITHER_NONE;
-		}
-	} else if(DitherType != DITHER_NONE) {
-		//! If we requested ordered dithering, we need to calculate the
-		//! average slope of each channel in each palette. We do this
-		//! the lazy way by just sorting the levels of each channel,
-		//! and then taking the average slope between each colour,
-		//! weighted by each colour's alpha.
-		//! The memory allocation is physically:
-		//!  Vec4f_t Slope[nTilePalettes];
-		//!  Vec4f_t Temp[nPaletteColours];
-		DitherBuffer = (Vec4f_t*)malloc((nTilePalettes + nPaletteColours) * sizeof(Vec4f_t));
-		if(DitherBuffer) {
-			uint32_t k;
-			Vec4f_t *Temp = DitherBuffer + nTilePalettes;
-			for(k=0;k<nTilePalettes;k++) {
-				//! Get colours for this palette
-				for(n=0;n<nPaletteColours;n++) {
-					Temp[n] = Palette[k*nPaletteColours+n];
-				}
-
-				//! Now sort and get average slope, premultiplied by DitherLevel
-				qsort(Temp, nPaletteColours, sizeof(Vec4f_t), PaletteSort0);
-				DitherBuffer[k].f32[0] = GetAverageSlope(Temp, nPaletteColours, 0);
-				qsort(Temp, nPaletteColours, sizeof(Vec4f_t), PaletteSort1);
-				DitherBuffer[k].f32[1] = GetAverageSlope(Temp, nPaletteColours, 1);
-				qsort(Temp, nPaletteColours, sizeof(Vec4f_t), PaletteSort2);
-				DitherBuffer[k].f32[2] = GetAverageSlope(Temp, nPaletteColours, 2);
-				qsort(Temp, nPaletteColours, sizeof(Vec4f_t), PaletteSort3);
-				DitherBuffer[k].f32[3] = GetAverageSlope(Temp, nPaletteColours, 3);
-				DitherBuffer[k] = Vec4f_Muli(&DitherBuffer[k], DitherLevel);
-			}
 		} else {
 			//! If we have no memory, disable dithering
 			DitherType = DITHER_NONE;
@@ -328,10 +286,8 @@ void DitherPaletteImage(
 					} else {
 						Offs = CheckerDitherOffset(x, y);
 					}
-					Px = DitherBuffer[TilePalIdx];
-					Px = Vec4f_Muli (&Px, Offs);
-					Px = Vec4f_Add  (&Px, &PxOrig);
-					BestFitIdx = FindNearestColour(&Px, TilePalette, nPaletteColours);
+					Vec4f_t vOffs = Vec4f_Broadcast(Offs * DitherLevel);
+					BestFitIdx = FindNearestDitheredColour(&PxOrig, &vOffs, TilePalette, nPaletteColours);
 					Px = TilePalette[BestFitIdx];
 				}
 			} else {
