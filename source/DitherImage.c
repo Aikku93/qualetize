@@ -23,6 +23,8 @@ static uint8_t FindNearestDitheredColour(const Vec4f_t *x, const Vec4f_t *Bias, 
 	uint32_t n;
 
 	//! Find closest two matches
+	//! Note that we ensure to not find a duplicate entry,
+	//! and if we only have one match, we use it anyway.
 	uint8_t BestIdxA = 0, BestIdxB = 0;
 	float BestDistA = INFINITY;
 	float BestDistB = INFINITY;
@@ -33,11 +35,12 @@ static uint8_t FindNearestDitheredColour(const Vec4f_t *x, const Vec4f_t *Bias, 
 			BestDistB = BestDistA;
 			BestIdxA  = (uint8_t)n;
 			BestDistA = Dist;
-		} else if(Dist < BestDistB) {
+		} else if(Dist < BestDistB && Dist > BestDistA) {
 			BestIdxB  = (uint8_t)n;
 			BestDistB = Dist;
 		}
 	}
+	if(BestDistB == INFINITY) return BestIdxA;
 
 	//! Scale the bias by their differences, and find closest match to this
 	Vec4f_t xNew = Vec4f_Sub(&Pal[BestIdxA], &Pal[BestIdxB]);
