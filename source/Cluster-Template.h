@@ -45,12 +45,14 @@ static uint32_t PopEmptyClusterList(TCluster_t *Clusters, uint32_t *Head) {
 //! Clear training data
 static inline void ClearTraining(TCluster_t *x, uint32_t nDims) {
 	x->nPoints = 0;
+	x->TrainWeight = 0.0f;
 	TCluster_ClearTrainingVector(x, nDims);
 }
 
 //! Train cluster on data
-static inline void TrainCluster(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
-	TCluster_AddToTraining(x, Data, nDims);
+static inline void TrainCluster(TCluster_t *x, const TClusterData_t *Data, float w, uint32_t nDims) {
+	TCluster_AddToTraining(x, Data, w, nDims);
+	x->TrainWeight += w;
 	x->nPoints++;
 }
 
@@ -59,11 +61,11 @@ static uint8_t ResolveCluster(
 	TCluster_t *Cluster,
 	const TClusterData_t *Data,
 	const uint32_t *ClusterListIndices,
+	const float *Weights,
 	uint32_t nDims
 ) {
 	//! Resolve for the centroid
-	uint32_t nPoints = Cluster->nPoints;
-	if(nPoints == 0) return 0;
+	if(Cluster->nPoints == 0 || Cluster->TrainWeight == 0.0f) return 0;
 	TCluster_ResolveCentroid(Cluster, nDims);
 
 	//! Recalculate distortion
@@ -72,7 +74,8 @@ static uint8_t ResolveCluster(
 	float    PeakDistVal = 0.0f;
 	float    TotalDist   = 0.0f;
 	while(Next != CLUSTER_END_OF_LIST) {
-		float Dist = TCluster_Dist2ToCentroid(Cluster, Data + Next*nDims, nDims);
+		float w = Weights ? Weights[Next] : 1.0f;
+		float Dist = w * TCluster_Dist2ToCentroid(Cluster, Data + Next*nDims, nDims);
 		if(Dist > PeakDistVal) {
 			PeakDistIdx = Next;
 			PeakDistVal = Dist;
@@ -95,6 +98,7 @@ static inline uint32_t TClusterize_Process(
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
 	uint32_t nPasses,
+	const float *Weights,
 	uint32_t nDims
 ) {
 	uint32_t n, k;
@@ -107,23 +111,31 @@ static inline uint32_t TClusterize_Process(
 	Clusters[0].FirstDataIdx  = CLUSTER_END_OF_LIST;
 	ClearTraining(&Clusters[0], nDims);
 	for(n=0;n<nDataPoints;n++) {
+		float w = Weights ? Weights[n] : 1.0f;
 		InsertAtListHead(n, &Clusters[0].FirstDataIdx, ClusterListIndices);
-		TrainCluster(&Clusters[0], &Data[n], nDims);
+		TrainCluster(&Clusters[0], &Data[n], w, nDims);
 	}
-	ResolveCluster(&Clusters[0], Data, ClusterListIndices, nDims);
+	ResolveCluster(&Clusters[0], Data, ClusterListIndices, Weights, nDims);
 	InsertToDistortedClusterList(Clusters, 0, &DistClusterHead);
 
 	//! Begin creating additional clusters
 	while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST) {
-		//! Create new cluster from the most distorted data point
+		//! Create new clusters from the most distorted data points
 		//! Note that we are splitting out the most distorted point
 		//! of the most distorted cluster, NOT the most distorted
 		//! point general. This is an important distinction.
-		{
+		float MaxDist = Clusters[DistClusterHead].TotalDist;
+		do {
+			//! Stop splitting once we've reached clusters with low distortion.
+			//! The idea is to only split highly distorted clusters, so that
+			//! we avoid early splitting of low-distortion clusters, as this
+			//! would give sub-optimal results.
 			uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
+			if(Clusters[SrcCluster].TotalDist < 0.15f*MaxDist) break;
+
 			uint32_t DstCluster = nCurrentClusters++;
 			TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
-		}
+		} while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST);
 
 		//! Begin refinement loop
 		uint32_t Pass;
@@ -144,24 +156,23 @@ static inline uint32_t TClusterize_Process(
 						BestDist = Dist;
 					}
 				}
+				float w = Weights ? Weights[n] : 1.0f;
 				InsertAtListHead(n, &Clusters[BestIdx].FirstDataIdx, ClusterListIndices);
-				TrainCluster(&Clusters[BestIdx], Data + n*nDims, nDims);
+				TrainCluster(&Clusters[BestIdx], Data + n*nDims, w, nDims);
 			}
 
 			//! Resolve all clusters
-			uint8_t Resolved = 1;
 			float ThisPassDist = 0.0f;
-			DistClusterHead  = CLUSTER_END_OF_LIST, DistClusterHead = CLUSTER_END_OF_LIST;
+			DistClusterHead  = CLUSTER_END_OF_LIST;
 			EmptyClusterHead = CLUSTER_END_OF_LIST;
 			for(k=0;k<nCurrentClusters;k++) {
-				if(ResolveCluster(&Clusters[k], Data, ClusterListIndices, nDims)) {
+				if(ResolveCluster(&Clusters[k], Data, ClusterListIndices, Weights, nDims)) {
 					//! If the cluster resolves, update the distortion linked list
 					InsertToDistortedClusterList(Clusters, k, &DistClusterHead);
 					ThisPassDist += Clusters[k].TotalDist;
 				} else {
 					//! No resolve - append to empty-cluster linked list
 					InsertToEmptyClusterList(Clusters, k, &EmptyClusterHead);
-					Resolved = 0;
 				}
 			}
 
@@ -171,12 +182,6 @@ static inline uint32_t TClusterize_Process(
 				uint32_t DstCluster = PopEmptyClusterList    (Clusters, &EmptyClusterHead);
 				TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
 			}
-
-			//! If we're still in the initialization stage, only perform
-			//! enough passes to ensure all clusters are filled. We need
-			//! all clusters filled because we will create new clusters
-			//! from the most distorted points in the next iteration.
-			if(nCurrentClusters < nClusters && Resolved && Pass >= nCurrentClusters) break;
 
 			//! Early exit on convergence
 			if(ThisPassDist == 0.0f || ThisPassDist >= LastPassDist) break;

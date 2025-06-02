@@ -20,14 +20,15 @@ static void TCluster_ClearTrainingVector(TCluster_t *x, uint32_t nDims) {
 	x->Training = VEC4F_EMPTY;
 }
 
-static void TCluster_AddToTraining(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
+static void TCluster_AddToTraining(TCluster_t *x, const TClusterData_t *Data, float w, uint32_t nDims) {
 	(void)nDims;
-	x->Training = Vec4f_Add(&x->Training, Data);
+	Vec4f_t t = Vec4f_Muli(Data, w);
+	x->Training = Vec4f_Add(&x->Training, &t);
 }
 
 static void TCluster_ResolveCentroid(TCluster_t *x, uint32_t nDims) {
 	(void)nDims;
-	x->Centroid = Vec4f_Divi(&x->Training, (float)x->nPoints);
+	x->Centroid = Vec4f_Divi(&x->Training, x->TrainWeight);
 }
 
 static void TCluster_SetCentroidToData(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
@@ -46,7 +47,8 @@ uint32_t Clusterize_Vec4f_Process(
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses
+	uint32_t nPasses,
+	const float *Weights
 ) {
 	return TClusterize_Process(
 		Clusters,
@@ -55,6 +57,7 @@ uint32_t Clusterize_Vec4f_Process(
 		nDataPoints,
 		ClusterListIndices,
 		nPasses,
+		Weights,
 		1
 	);
 }

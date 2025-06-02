@@ -21,6 +21,7 @@ struct Cluster_t {
 	uint32_t NextCluster;    //! Next cluster in list
 	uint32_t FirstDataIdx;   //! First data point assigned to this cluster
 	uint32_t MaxDistIdx;     //! Index of the most distorted data point
+	float    TrainWeight;    //! Sum of training weights
 	float    TotalDist;      //! Sum of distortion of all data points in this cluster
 	float   *Centroid;       //! Centroid of cluster
 	float   *Training;       //! Training summation
@@ -38,6 +39,7 @@ Cluster_Vec4f_t {
 	uint32_t NextCluster;
 	uint32_t FirstDataIdx;
 	uint32_t MaxDistIdx;
+	float    TrainWeight;
 	float    TotalDist;
 	Vec4f_t  Centroid;
 	Vec4f_t  Training;
@@ -59,7 +61,8 @@ uint32_t Clusterize_Process(
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses
+	uint32_t nPasses,
+	const float *Weights
 );
 uint32_t Clusterize_Vec4f_Process(
 	struct Cluster_Vec4f_t *Clusters,
@@ -67,7 +70,8 @@ uint32_t Clusterize_Vec4f_Process(
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses
+	uint32_t nPasses,
+	const float *Weights
 );
 
 //! Get cluster indices from clusters and data lists (uint8_t)

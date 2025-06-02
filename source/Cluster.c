@@ -24,17 +24,17 @@ static void TCluster_ClearTrainingVector(TCluster_t *x, uint32_t nDims) {
 	for(n=0;n<nDims;n++) x->Training[n] = 0.0f;
 }
 
-static void TCluster_AddToTraining(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
+static void TCluster_AddToTraining(TCluster_t *x, const TClusterData_t *Data, float w, uint32_t nDims) {
 	uint32_t n;
 	for(n=0;n<nDims;n++) {
-		x->Training[n] += Data[n];
+		x->Training[n] += Data[n]*w;
 	}
 }
 
 static void TCluster_ResolveCentroid(TCluster_t *x, uint32_t nDims) {
 	uint32_t n;
 	for(n=0;n<nDims;n++) {
-		x->Centroid[n] = x->Training[n] / (float)x->nPoints;
+		x->Centroid[n] = x->Training[n] / x->TrainWeight;
 	}
 }
 
@@ -57,7 +57,8 @@ uint32_t Clusterize_Process(
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses
+	uint32_t nPasses,
+	const float *Weights
 ) {
 	return TClusterize_Process(
 		Clusters,
@@ -66,6 +67,7 @@ uint32_t Clusterize_Process(
 		nDataPoints,
 		ClusterListIndices,
 		nPasses,
+		Weights,
 		nDims
 	);
 }
