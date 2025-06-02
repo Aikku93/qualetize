@@ -37,14 +37,11 @@ struct QualetizePlan_t {
 	uint16_t TileHeight;
 	uint16_t nPaletteColours;          //! Colours per palette
 	uint16_t nTilePalettes;            //! Number of palettes to generate
+	uint8_t  Colourspace;              //! Colourspace to use during processing
 	uint8_t  FirstColourIsTransparent; //! 0 = All palette entries used,  1 = First palette entry is always (0,0,0,0)
 	uint8_t  PremultipliedAlpha;       //! 0 = Multiply colours by alpha, 1 = Colours are pre-multiplied by alpha
-	uint8_t  DitherInputType;          //! Dithering to apply on conversion to target RGB range
-	uint8_t  DitherOutputType;         //! Dithering to apply on final output
-	uint16_t DitherInputLevel;         //! Dithering level to use on conversion to target RGB range (0 = None, 8000h = 100%)
-	uint16_t DitherOutputLevel;        //! Dithering level to use on final output (0 = None, 8000h = 100%)
-	uint8_t  Colourspace;              //! Colourspace to use during processing
-	uint8_t  r1[3];
+	uint8_t  DitherType;               //! Dithering to apply on final output
+	uint16_t DitherLevel;              //! Dithering level to use on final output (0 = None, 8000h = 100%)
 	uint32_t nTileClusterPasses;       //! Number of clustering passes to apply on tiles
 	uint32_t nColourClusterPasses;     //! Number of clustering passes to apply on tile colours
 	Vec4f_t  ColourDepth;              //! RGBA levels for output image
@@ -76,6 +73,7 @@ uint8_t Qualetize(
 //! Notes:
 //!  -If using Floyd-Steinberg dithering, then if the function
 //!   can't allocate the memory for it, it will disable dithering.
+//!  -This function is no longer used, but is preserved just in case.
 void DitherImage(
 	      Vec4f_t *DstPx,
 	const Vec4f_t *SrcPx,
@@ -103,7 +101,6 @@ void DitherPaletteImage(
 	uint32_t TileWidth,
 	uint32_t TileHeight,
 	uint32_t nPaletteColours,
-	uint32_t nTilePalettes,
 	Vec4f_t *RMSE
 );
 

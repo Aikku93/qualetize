@@ -204,7 +204,6 @@ void DitherPaletteImage(
 	uint32_t TileWidth,
 	uint32_t TileHeight,
 	uint32_t nPaletteColours,
-	uint32_t nTilePalettes,
 	Vec4f_t *RMSE
 ) {
 	uint32_t n;

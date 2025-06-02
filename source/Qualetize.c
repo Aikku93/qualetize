@@ -55,11 +55,9 @@ static BGRA8_t Vec4fRGBA_To_BGRA8(const Vec4f_t *x) {
 /************************************************/
 
 //! Calculate the colour value of a tile
-//! Note that PxBuffer[] must be able to hold TileWidth*TileHeight
-//! elements, since we use this is a scratch buffer for conversion.
 uint8_t CalculateTileColourValue(
 	float *TileValue,
-	Vec4f_t *PxBuffer,
+	float *TileWeight,
 	const Vec4f_t *InputPxData,
 	uint32_t TileX,
 	uint32_t TileY,
@@ -67,16 +65,15 @@ uint8_t CalculateTileColourValue(
 	uint32_t InputHeight,
 	const struct QualetizePlan_t *Plan
 ) {
-	uint32_t n;
-
 	//! Convert colours to Lab space, find the mean, and check opacity
 	//! CIELab and Oklab work fine here, but have different strengths.
 	//! In general, Oklab seems to preserve smooth gradients better,
 	//! but CIELab preserves colour information a lot better.
 	uint32_t x, y;
-	uint32_t nSampledPoints  = 0;
-	Vec4f_t  Mean   = VEC4F_EMPTY;
-	float    AlphaW = 0.0f;
+	uint32_t nSampledPoints = 0;
+	Vec4f_t  Mean  = VEC4F_EMPTY, Var = VEC4F_EMPTY;
+	Vec4f_t wMean  = VEC4F_EMPTY;
+	float   wMeanW = 0.0f;
 	for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
 		uint32_t vx = TileX*Plan->TileWidth  + x;
 		uint32_t vy = TileY*Plan->TileHeight + y;
@@ -84,56 +81,67 @@ uint8_t CalculateTileColourValue(
 			uint32_t PxOffs = vy*InputWidth + vx;
 			Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], COLOURSPACE_CIELAB);
 			if(!Plan->FirstColourIsTransparent || Px.f32[3] != 0.0f) {
-				Mean = Vec4f_Add(&Mean, &Px);
-				AlphaW += Px.f32[3];
-				PxBuffer[nSampledPoints++] = Px;
+				float w = Px.f32[0] * Px.f32[3];
+				Vec4f_t Px2 = Vec4f_Mul(&Px, &Px);
+				Vec4f_t wPx = Vec4f_Muli(&Px, w);
+				Mean  = Vec4f_Add(&Mean,  &Px);
+				Var   = Vec4f_Add(&Var,   &Px2);
+				wMean = Vec4f_Add(&wMean, &wPx);
+				wMeanW += w;
+				nSampledPoints++;
 			}
 		}
 	}
 
 	//! If tile is fully transparent AND we have a forced transparent
 	//! palette colour, then we can skip processing this tile
-	if(Plan->FirstColourIsTransparent && AlphaW == 0.0f) return 0;
+	if(Plan->FirstColourIsTransparent && !nSampledPoints) return 0;
 
-	//! Normalize the mean by dividing through the alpha sum on the
-	//! colour channels (the values are pre-multiplied), and alpha
-	//! is normalized as the average.
-	Vec4f_t wMean = Vec4f_Divi(&Mean, (float)nSampledPoints);
-	if(AlphaW != 0.0f) {
-		Mean = Vec4f_Divi(&Mean, AlphaW);
-		Mean.f32[3] = AlphaW / (float)nSampledPoints;
-	}
+	//! Normalize means and variance, calculate standard deviation
+	Vec4f_t Mean2, Dev;
+	static const Vec4f_t Zero = VEC4F_EMPTY;
+	Mean  = Vec4f_Divi(&Mean, (float)nSampledPoints);
+	Var   = Vec4f_Divi(&Var,  (float)nSampledPoints);
+	wMean = Vec4f_Divi(&wMean, wMeanW);
+	Mean2 = Vec4f_Mul(&Mean, &Mean);
+	Var   = Vec4f_Sub(&Var, &Mean2);
+	Var   = Vec4f_Max(&Var, &Zero); //! <- Protect against round-off error before square root
+	Dev   = Vec4f_Sqrt(&Var);
 
-	//! Calculate the variance, and thus the SD
-	//! Note that this is done using the alpha-weighted mean!
-	Vec4f_t Var = VEC4F_EMPTY;
-	for(n=0;n<nSampledPoints;n++) {
-		Vec4f_t p = PxBuffer[n];
-		p = Vec4f_Sub(&p, &wMean);
-		p = Vec4f_Mul(&p, &p);
-		Var = Vec4f_Add(&Var, &p);
-	}
-	Var = Vec4f_Divi(&Var, (float)nSampledPoints);
-	Var = Vec4f_Sqrt(&Var);
+	//! Calculate saturation of the weighted-mean colours.
+	//! The colours were weighted by luma and alpha, such that we
+	//! give more importance to brighter and more opaque colours
+	//! than darker and/or translucent colours.
+	//! We use the saturation as a cluster weight, because we want
+	//! less-saturated clusters to get fewer palettes, as we can
+	//! instead re-distribute them to more colourful tiles, which
+	//! should result in less averaging of very different colours,
+	//! and thus reduce the amount of desaturation that happens.
+	//! Also note that we weight the saturation again, by the luma
+	//! component - a colourful-but-dark tile is unimportant.
+	float Luma2   = wMean.f32[0]*wMean.f32[0];
+	float Chroma2 = wMean.f32[1]*wMean.f32[1] + wMean.f32[2]*wMean.f32[2];
+	float wSatur  = (Luma2 > 0.0f) ? sqrtf((Luma2 * Chroma2) / (Luma2 + Chroma2)) : 0.0f;
 
-	//! Fill the tile matrix data
-	//! Note that variance gets a higher weight than the mean. This
-	//! generally reduces PSNR, but reduces the chance of blocking
-	//! artifacts around tile boundaries, by preserving the dynamic
-	//! range of each tile to avoid harsh discontinuities.
-	//! The weight of 1.618 was chosen arbitrarily (golden ratio),
-	//! but seems to give the best trade-off anyway.
-	Var = Vec4f_Muli(&Var, 1.618f);
-
-	//! Fill the tile data
+	//! Fill the tile data.
+	//! Note that we further weight by the average alpha (not the
+	//! weighted average alpha!), since low-alpha areas can be
+	//! banded together into fewer palettes with few issues.
+	//! Finally, we combine saturation and the amount of deviation
+	//! into a single weight quantity: we want saturated tiles to
+	//! split into more palettes as needed, and we also want tiles
+	//! with high variance to split into more palettes; for tiles
+	//! that are saturated and have high variance, we want these
+	//! to have higher priority for splitting.
 	TileValue[0] = Mean.f32[0];
 	TileValue[1] = Mean.f32[1];
 	TileValue[2] = Mean.f32[2];
 	TileValue[3] = Mean.f32[3];
-	TileValue[4] = Var.f32[0];
-	TileValue[5] = Var.f32[1];
-	TileValue[6] = Var.f32[2];
-	TileValue[7] = Var.f32[3];
+	TileValue[4] = Dev.f32[0];
+	TileValue[5] = Dev.f32[1];
+	TileValue[6] = Dev.f32[2];
+	TileValue[7] = Dev.f32[3];
+	*TileWeight = 0.0001f + Mean.f32[3]*(wSatur+Vec4f_Length(&Dev));
 	return 1;
 }
 
@@ -211,6 +219,10 @@ uint8_t Qualetize(
 	//! instead store different attributes to optimize.
 	float *TileColourValues;
 
+	//! Weights for tile clustering.
+	//! Contains (ImageWidth/TileWidth)*(ImageHeight/TileHeight) elements.
+	float *TileClusterWeights;
+
 	//! Pixel data for cluster processing (used to store lists of colours to cluster).
 	//! Contains up to ImageWidth*ImageHeight elements.
 	//! The reason we need so many elements is because if all pixels of the image
@@ -261,6 +273,7 @@ uint8_t Qualetize(
 		CREATE_BUFFER(PaletteData,         TotalPalCols * sizeof(Vec4f_t));
 		CREATE_BUFFER(TilePaletteIndices,  nTilesTotal  * sizeof(uint8_t));
 		CREATE_BUFFER(TileColourValues,    nTilesTotal  * sizeof(float)*TILE_CLUSTER_DIMENSIONS);
+		CREATE_BUFFER(TileClusterWeights,  nTilesTotal  * sizeof(float));
 		CREATE_BUFFER(ColourClusterBuffer, nPxTotal     * sizeof(Vec4f_t));
 		CREATE_BUFFER(ClustersData,        ClustersDataSize);
 		CREATE_BUFFER(ClusterListIndices,  nPxTotal     * sizeof(uint32_t));
@@ -286,6 +299,7 @@ uint8_t Qualetize(
 		ASSIGN_BUFFER(PaletteData, Vec4f_t);
 		ASSIGN_BUFFER(TilePaletteIndices,  uint8_t);
 		ASSIGN_BUFFER(TileColourValues,    float);
+		ASSIGN_BUFFER(TileClusterWeights,  float);
 		ASSIGN_BUFFER(ColourClusterBuffer, Vec4f_t);
 		ASSIGN_BUFFER_FROM(TileClusters,   struct Cluster_t,       ClustersData_Offs);
 		ASSIGN_BUFFER_FROM(ColourClusters, struct Cluster_Vec4f_t, ClustersData_Offs);
@@ -300,8 +314,6 @@ uint8_t Qualetize(
 	uint32_t *BlankTileIndices = (uint32_t*)(TileColourValues + nTilesTotal*TILE_CLUSTER_DIMENSIONS);
 	const uint32_t *BlankTileIndicesEnd = BlankTileIndices;
 	uint32_t nNonBlankTiles = 0; {
-		uint32_t n;
-
 		//! Convert raw pixels
 		uint32_t x, y;
 		if(InputPalette) {
@@ -333,30 +345,16 @@ uint8_t Qualetize(
 			}
 		}
 
-		//! Apply dithering and bit-depth reduction
-		Vec4f_t *DitheredImage = ColourClusterBuffer;
-		DitherImage(
-			DitheredImage,
-			InputPxData,
-			InputWidth,
-			InputHeight,
-			Plan->DitherInputType,
-			(float)Plan->DitherInputLevel / 32768.0f,
-			&Plan->ColourDepth
-		);
-
 		//! Chop up the image into tiles and store their pixels
 		uint32_t tx, ty;
 		for(ty=0;ty<nTilesY;ty++) for(tx=0;tx<nTilesX;tx++) {
 			uint32_t TileIdx = ty*nTilesX + tx;
 			Vec4f_t *ThisTilePxData = TilePxData + TileIdx*nPxPerTile;
 
-			//! Calculate this tile's value (for tile clustering) from
-			//! the SOURCE image, not the bit-crushed version. This can
-			//! help to add more detail or "context" for clustering.
+			//! Calculate this tile's value (for tile clustering)
 			if(CalculateTileColourValue(
 				TileColourValues + nNonBlankTiles*TILE_CLUSTER_DIMENSIONS,
-				ThisTilePxData,
+				&TileClusterWeights[TileIdx],
 				InputPxData,
 				tx,
 				ty,
@@ -369,19 +367,16 @@ uint8_t Qualetize(
 				*--BlankTileIndices = TileIdx;
 			}
 
-			//! Store tile pixels from the bit-crushed image
+			//! Store tile pixels
 			for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
 				uint32_t vx = tx*Plan->TileWidth  + x;
 				uint32_t vy = ty*Plan->TileHeight + y;
 				if(vx >= InputWidth)  vx = InputWidth-1;
 				if(vy >= InputHeight) vy = InputHeight-1;
 				uint32_t PxOffs = vy*InputWidth + vx;
-				*ThisTilePxData++ = ConvertToColourspace(&DitheredImage[PxOffs], Plan->Colourspace);
+				*ThisTilePxData++ = InputPxData[PxOffs] = ConvertToColourspace(&InputPxData[PxOffs], Plan->Colourspace);
 			}
 		}
-
-		//! Store dithered image as input for output in final colourspace
-		for(n=0;n<nPxTotal;n++) InputPxData[n] = ConvertToColourspace(&InputPxData[n], Plan->Colourspace);
 	}
 
 	//! Cluster tiles together by palette
@@ -404,7 +399,8 @@ uint8_t Qualetize(
 			Plan->nTilePalettes,
 			nNonBlankTiles,
 			ClusterListIndices,
-			TileClusterPasses
+			TileClusterPasses,
+			TileClusterWeights
 		);
 		Clusterize_GetClusterIndices_u8(
 			TilePaletteIndices,
@@ -479,7 +475,8 @@ uint8_t Qualetize(
 				nOutputColours,
 				DataCnt,
 				ClusterListIndices,
-				ColourClusterPasses
+				ColourClusterPasses,
+				NULL
 			);
 			for(n=nOutputClusters;n<nOutputColours;n++) {
 				ColourClusters[n].Centroid = UnusedColour;
@@ -524,7 +521,8 @@ uint8_t Qualetize(
 				nOutputColours,
 				nOutputColours,
 				ClusterListIndices,
-				PALETTE_SORT_PASSES
+				PALETTE_SORT_PASSES,
+				NULL
 			);
 
 			//! Sort the clusters by hue
@@ -614,12 +612,11 @@ uint8_t Qualetize(
 		TilePaletteIndices,
 		InputWidth,
 		InputHeight,
-		Plan->DitherOutputType,
-		(float)Plan->DitherOutputLevel / 32768.0f,
+		Plan->DitherType,
+		(float)Plan->DitherLevel / 32768.0f,
 		Plan->TileWidth,
 		Plan->TileHeight,
 		Plan->nPaletteColours,
-		Plan->nTilePalettes,
 		RMSE
 	);
 

@@ -62,8 +62,8 @@ static int ParseDitherMode(const char *s, uint8_t *ModePtr, uint16_t *LevelPtr) 
 #define DITHERMODE_MATCH(Name) \
 	(((r = mystrcmp(s, Name, &MatchEnd)) || 1) && (r == '\0' || r == ','))
 	     if(DITHERMODE_MATCH("none" ))    Mode = DITHER_NONE,           Level = 0.0f;
-	else if(DITHERMODE_MATCH("floyd"))    Mode = DITHER_FLOYDSTEINBERG, Level = 1.0f;
-	else if(DITHERMODE_MATCH("atkinson")) Mode = DITHER_ATKINSON,       Level = 1.0f;
+	else if(DITHERMODE_MATCH("floyd"))    Mode = DITHER_FLOYDSTEINBERG, Level = 0.5f;
+	else if(DITHERMODE_MATCH("atkinson")) Mode = DITHER_ATKINSON,       Level = 0.5f;
 	else if(DITHERMODE_MATCH("checker"))  Mode = DITHER_CHECKER,        Level = 1.0f;
 	else if(DITHERMODE_MATCH("ord2" ))    Mode = DITHER_ORDERED(1),     Level = 1.0f;
 	else if(DITHERMODE_MATCH("ord4" ))    Mode = DITHER_ORDERED(2),     Level = 1.0f;
@@ -107,18 +107,11 @@ int main(int argc, const char *argv[]) {
 			"                         by the alpha value, 32-bit BMP files generally do not.\n"
 			"                         Note that if this option is set to `y`, then output\n"
 			"                         colours in the palette will also be pre-multiplied.\n"
-			"  -colspace:oklab      - Set colourspace\n"
+			"  -colspace:ycbcr-psy  - Set colourspace\n"
 			"                         Different colourspaces may give better/worse results\n"
 			"                         depending on the input image, and it may be necessary\n"
 			"                         to experiment to find the optimal one.\n"
-			"  -ditherin:none       - Set dither mode, level for input\n"
-			"                         This option will dither the input image (in sRGB space\n"
-			"                         to get the \"correct\" output colours), and use this as\n"
-			"                         the input for generating the palette data. This option\n"
-			"                         may generate unused palette entries corresponding to\n"
-			"                         dithered colours that weren't used during output, but\n"
-			"                         can help remove tile blocking/banding artifacts.\n"
-			"  -ditherout:floyd,1.0 - Set dither mode, level for output\n"
+			"  -dither:floyd,0.5    - Set dither mode, level for output\n"
 			"                         This can reduce some of the banding artifacts caused\n"
 			"                         when the colours per palette is very small, at the\n"
 			"                         expense of added \"noise\".\n"
@@ -148,8 +141,8 @@ int main(int argc, const char *argv[]) {
 			"  oklab\n"
 			"Dither modes available (and default level):\n"
 			"  none         - No dithering\n"
-			"  floyd,1.0    - Floyd-Steinberg\n"
-			"  atkinson,1.0 - Atkinson diffusion\n"
+			"  floyd,0.5    - Floyd-Steinberg\n"
+			"  atkinson,0.5 - Atkinson diffusion\n"
 			"  checker,1.0  - Chekerboard dithering\n"
 			"  ord2,1.0     - 2x2 ordered dithering\n"
 			"  ord4,1.0     - 4x4 ordered dithering\n"
@@ -157,8 +150,6 @@ int main(int argc, const char *argv[]) {
 			"  ord16,1.0    - 16x16 ordered dithering\n"
 			"  ord32,1.0    - 32x32 ordered dithering\n"
 			"  ord64,1.0    - 64x64 ordered dithering\n"
-			"Note that ordered dithering on the output uses an approximation to the gradient\n"
-			"slope only, as the palette is very unlikely to have a uniform spread.\n"
 		);
 		return 1;
 	}
@@ -171,11 +162,9 @@ int main(int argc, const char *argv[]) {
 	Plan.nTilePalettes        = 16;
 	Plan.FirstColourIsTransparent = 1;
 	Plan.PremultipliedAlpha   = 0;
-	Plan.DitherInputType      = DITHER_NONE;
-	Plan.DitherInputLevel     = 0;
-	Plan.DitherOutputType     = DITHER_FLOYDSTEINBERG;
-	Plan.DitherOutputLevel    = 0x8000;
-	Plan.Colourspace          = COLOURSPACE_OKLAB;
+	Plan.DitherType           = DITHER_FLOYDSTEINBERG;
+	Plan.DitherLevel          = 0x4000;
+	Plan.Colourspace          = COLOURSPACE_YCBCR_PSY;
 	Plan.nTileClusterPasses   = 0;
 	Plan.nColourClusterPasses = 0;
 	Plan.ColourDepth          = (Vec4f_t){{31,31,31,1}};
@@ -217,14 +206,8 @@ int main(int argc, const char *argv[]) {
 				else printf("WARNING: Unrecognized colourspace: %s\n", ArgStr);
 				ArgOk = 1;
 			}
-			ARGMATCH(argv[argi], "-ditherin:") {
-				if(ParseDitherMode(ArgStr, &Plan.DitherInputType, &Plan.DitherInputLevel) == -1) {
-					printf("WARNING: Unrecognized input dither mode: %s\n", ArgStr);
-				}
-				ArgOk = 1;
-			}
-			ARGMATCH(argv[argi], "-ditherout:") {
-				if(ParseDitherMode(ArgStr, &Plan.DitherOutputType, &Plan.DitherOutputLevel) == -1) {
+			ARGMATCH(argv[argi], "-dither:") {
+				if(ParseDitherMode(ArgStr, &Plan.DitherType, &Plan.DitherLevel) == -1) {
 					printf("WARNING: Unrecognized output dither mode: %s\n", ArgStr);
 				}
 				ArgOk = 1;
