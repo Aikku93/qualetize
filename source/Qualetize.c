@@ -102,7 +102,7 @@ uint8_t CalculateTileColourValue(
 	static const Vec4f_t Zero = VEC4F_EMPTY;
 	Mean  = Vec4f_Divi(&Mean, (float)nSampledPoints);
 	Var   = Vec4f_Divi(&Var,  (float)nSampledPoints);
-	wMean = Vec4f_Divi(&wMean, wMeanW);
+	if(wMeanW != 0.0f) wMean = Vec4f_Divi(&wMean, wMeanW);
 	Mean2 = Vec4f_Mul(&Mean, &Mean);
 	Var   = Vec4f_Sub(&Var, &Mean2);
 	Var   = Vec4f_Max(&Var, &Zero); //! <- Protect against round-off error before square root
@@ -133,15 +133,15 @@ uint8_t CalculateTileColourValue(
 	//! with high variance to split into more palettes; for tiles
 	//! that are saturated and have high variance, we want these
 	//! to have higher priority for splitting.
-	TileValue[0] = Mean.f32[0];
-	TileValue[1] = Mean.f32[1];
-	TileValue[2] = Mean.f32[2];
-	TileValue[3] = Mean.f32[3];
+	TileValue[0] = wMean.f32[0];
+	TileValue[1] = wMean.f32[1];
+	TileValue[2] = wMean.f32[2];
+	TileValue[3] = wMean.f32[3];
 	TileValue[4] = Dev.f32[0];
 	TileValue[5] = Dev.f32[1];
 	TileValue[6] = Dev.f32[2];
 	TileValue[7] = Dev.f32[3];
-	*TileWeight = 0.0001f + Mean.f32[3]*(wSatur+Vec4f_Length(&Dev));
+	*TileWeight = 0.1f + Mean.f32[3]*(wSatur+Vec4f_Length(&Dev));
 	return 1;
 }
 
@@ -587,6 +587,8 @@ uint8_t Qualetize(
 		uint32_t n;
 		BGRA8_t *Dst = OutputPalette + PalIdx*Plan->nPaletteColours;
 		Vec4f_t *Src = PaletteData   + PalIdx*Plan->nPaletteColours;
+		Vec4f_t vZeros = Vec4f_Broadcast(0.0f);
+		Vec4f_t vOnes  = Vec4f_Broadcast(1.0f);
 		for(n=0;n<Plan->nPaletteColours;n++) {
 			//! Convert back to RGB, undo pre-multiplied alpha as needed, and quantize
 			Vec4f_t x = ConvertFromColourspace(&Src[n], Plan->Colourspace);
@@ -598,6 +600,8 @@ uint8_t Qualetize(
 					x.f32[2] /= a;
 				}
 			}
+			x = Vec4f_Max(&x, &vZeros);
+			x = Vec4f_Min(&x, &vOnes);
 			x = Vec4f_Quantize(&x, &Plan->ColourDepth);
 			Dst[n] = Vec4fRGBA_To_BGRA8(&x);
 
