@@ -369,12 +369,15 @@ uint8_t Qualetize(
 
 			//! Store tile pixels
 			for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
+				uint8_t OutOfBounds = 0;
 				uint32_t vx = tx*Plan->TileWidth  + x;
 				uint32_t vy = ty*Plan->TileHeight + y;
-				if(vx >= InputWidth)  vx = InputWidth-1;
-				if(vy >= InputHeight) vy = InputHeight-1;
+				if(vx >= InputWidth)  OutOfBounds = 1, vx = InputWidth-1;
+				if(vy >= InputHeight) OutOfBounds = 1, vy = InputHeight-1;
 				uint32_t PxOffs = vy*InputWidth + vx;
-				*ThisTilePxData++ = InputPxData[PxOffs] = ConvertToColourspace(&InputPxData[PxOffs], Plan->Colourspace);
+				Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], Plan->Colourspace);
+				*ThisTilePxData++ = Px;
+				if(!OutOfBounds) InputPxData[PxOffs] = Px;
 			}
 		}
 	}
