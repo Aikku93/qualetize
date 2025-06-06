@@ -41,6 +41,10 @@ static uint8_t FindNearestDitheredColour(const Vec4f_t *x, const Vec4f_t *Bias, 
 		}
 	}
 	if(BestDistB == INFINITY) return BestIdxA;
+	if(BestDistA < 0.25f*BestDistB) { //! DistA/DistB < (1/2)^2
+		//! We are very out of range, so don't bother dithering
+		return BestIdxA;
+	}
 
 	//! Scale the bias by their differences, and find closest match to this
 	Vec4f_t xNew = Vec4f_Sub(&Pal[BestIdxA], &Pal[BestIdxB]);
