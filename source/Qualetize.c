@@ -121,7 +121,7 @@ uint8_t CalculateTileColourValue(
 	//! component - a colourful-but-dark tile is unimportant.
 	float Luma2   = wMean.f32[0]*wMean.f32[0];
 	float Chroma2 = wMean.f32[1]*wMean.f32[1] + wMean.f32[2]*wMean.f32[2];
-	float wSatur  = (Luma2 > 0.0f) ? sqrtf((Luma2 * Chroma2) / (Luma2 + Chroma2)) : 0.0f;
+	float Satur   = (Luma2 > 0.0f) ? sqrtf(Chroma2 / (Luma2 + Chroma2)) : 0.0f;
 
 	//! Fill the tile data.
 	//! Note that we further weight by the average alpha (not the
@@ -133,6 +133,11 @@ uint8_t CalculateTileColourValue(
 	//! with high variance to split into more palettes; for tiles
 	//! that are saturated and have high variance, we want these
 	//! to have higher priority for splitting.
+	//! Note that this latter saturation is itself weighted by the
+	//! weighted average luma, such that brighter/more prominent
+	//! colours are favoured with higher weights, because we want
+	//! to penalize the opposite condition (colourful and/or varied
+	//! /dark/ colours, where we can afford to ignore distortion).
 	TileValue[0] = wMean.f32[0];
 	TileValue[1] = wMean.f32[1];
 	TileValue[2] = wMean.f32[2];
@@ -141,7 +146,7 @@ uint8_t CalculateTileColourValue(
 	TileValue[5] = Dev.f32[1];
 	TileValue[6] = Dev.f32[2];
 	TileValue[7] = Dev.f32[3];
-	*TileWeight = 0.1f + Mean.f32[3]*(wSatur+Vec4f_Length(&Dev));
+	*TileWeight = 0.1f + wMean.f32[0]*Mean.f32[3]*(Satur+Vec4f_Length(&Dev));
 	return 1;
 }
 
