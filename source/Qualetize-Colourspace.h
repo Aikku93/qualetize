@@ -116,9 +116,9 @@ static Vec4f_t ConvertLMStoRGB(const Vec4f_t *x) {
 //! Convert LMS <-> ICtCp (using HLG transfer function from ARIB STD-B67)
 static Vec4f_t ConvertLMStoICtCp(const Vec4f_t *x) {
 	Vec4f_t t;
-	float L = 0.5f * sqrtf(x->f32[0]);
-	float M = 0.5f * sqrtf(x->f32[1]);
-	float S = 0.5f * sqrtf(x->f32[2]);
+	float L = sqrtf(fmaxf(0.0f, x->f32[0]));
+	float M = sqrtf(fmaxf(0.0f, x->f32[1]));
+	float S = sqrtf(fmaxf(0.0f, x->f32[2]));
 	t.f32[0] = 0.500000f*L + 0.500000f*M;
 	t.f32[1] = 0.885010f*L - 1.822510f*M + 0.937500f*S;
 	t.f32[2] = 2.319336f*L - 2.249023f*M - 0.070313f*S;
@@ -127,9 +127,9 @@ static Vec4f_t ConvertLMStoICtCp(const Vec4f_t *x) {
 }
 static Vec4f_t ConvertICtCpToLMS(const Vec4f_t *x) {
 	Vec4f_t t;
-	float Lp = 2.0f * (x->f32[0] + 0.015719f*x->f32[1] + 0.209581f*x->f32[2]);
-	float Mp = 2.0f * (x->f32[0] - 0.015719f*x->f32[1] - 0.209581f*x->f32[2]);
-	float Sp = 2.0f * (x->f32[0] + 1.021271f*x->f32[1] - 0.605274f*x->f32[2]);
+	float Lp = (x->f32[0] + 0.015719f*x->f32[1] + 0.209581f*x->f32[2]);
+	float Mp = (x->f32[0] - 0.015719f*x->f32[1] - 0.209581f*x->f32[2]);
+	float Sp = (x->f32[0] + 1.021271f*x->f32[1] - 0.605274f*x->f32[2]);
 	t.f32[0] = Lp*Lp;
 	t.f32[1] = Mp*Mp;
 	t.f32[2] = Sp*Sp;
