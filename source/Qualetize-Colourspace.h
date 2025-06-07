@@ -24,10 +24,10 @@ static float LinearRGBtoRGB(float t) {
 //! un-compand sRGB to linear RGB, followed by a cubic
 //! root response, yielding an exponent of 2.2/3 = 0.73.
 static float RGBtoVisualRGB(float t) {
-	return powf(t, (float)(2.2 / 3.0));
+	return (t > 0.0f) ? powf(t, (float)(2.2 / 3.0)) : 0.0f;
 }
 static float VisualRGBtoRGB(float t) {
-	return powf(t, (float)(3.0 / 2.2));
+	return (t > 0.0f) ? powf(t, (float)(3.0 / 2.2)) : 0.0f;
 }
 
 /************************************************/
