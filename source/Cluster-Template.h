@@ -119,22 +119,23 @@ static inline uint32_t TClusterize_Process(
 	InsertToDistortedClusterList(Clusters, 0, &DistClusterHead);
 
 	//! Begin creating additional clusters
+	float LastSplitDistortion = INFINITY;
 	while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST) {
 		//! Create new clusters from the most distorted data points
 		//! Note that we are splitting out the most distorted point
 		//! of the most distorted cluster, NOT the most distorted
 		//! point general. This is an important distinction.
-		float MaxDist = Clusters[DistClusterHead].TotalDist;
+		float ThisSplitDistortion = LastSplitDistortion;
 		do {
 			//! Stop splitting once we've reached clusters with low distortion.
 			//! The idea is to only split highly distorted clusters, so that
 			//! we avoid early splitting of low-distortion clusters, as this
 			//! would give sub-optimal results.
 			uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
-			if(Clusters[SrcCluster].TotalDist < 0.5f*MaxDist) break;
-
 			uint32_t DstCluster = nCurrentClusters++;
 			TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
+			ThisSplitDistortion -= Clusters[SrcCluster].TotalDist;
+			if(ThisSplitDistortion < 0.25f*LastSplitDistortion) break;
 		} while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST);
 
 		//! Begin refinement loop
@@ -189,6 +190,7 @@ static inline uint32_t TClusterize_Process(
 			//! Set up for next iteration
 			LastPassDist = ThisPassDist;
 		}
+		LastSplitDistortion = LastPassDist;
 	}
 	return nCurrentClusters;
 }
