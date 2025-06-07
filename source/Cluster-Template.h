@@ -131,7 +131,7 @@ static inline uint32_t TClusterize_Process(
 			//! we avoid early splitting of low-distortion clusters, as this
 			//! would give sub-optimal results.
 			uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
-			if(Clusters[SrcCluster].TotalDist < 0.15f*MaxDist) break;
+			if(Clusters[SrcCluster].TotalDist < 0.5f*MaxDist) break;
 
 			uint32_t DstCluster = nCurrentClusters++;
 			TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
