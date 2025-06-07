@@ -102,7 +102,7 @@ uint8_t CalculateTileColourValue(
 	static const Vec4f_t Zero = VEC4F_EMPTY;
 	Mean  = Vec4f_Divi(&Mean, (float)nSampledPoints);
 	Var   = Vec4f_Divi(&Var,  (float)nSampledPoints);
-	if(wMeanW != 0.0f) wMean = Vec4f_Divi(&wMean, wMeanW);
+	wMean = (wMeanW != 0.0f) ? Vec4f_Divi(&wMean, wMeanW) : Mean;
 	Mean2 = Vec4f_Mul(&Mean, &Mean);
 	Var   = Vec4f_Sub(&Var, &Mean2);
 	Var   = Vec4f_Max(&Var, &Zero); //! <- Protect against round-off error before square root
