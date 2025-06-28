@@ -326,9 +326,39 @@ static inline Vec4f_t Vec4f_Round(const Vec4f_t *x) {
 	return y;
 }
 
+static inline Vec4f_t Vec4f_Floor(const Vec4f_t *x) {
+	Vec4f_t y;
+	y.f32[0] = floorf(x->f32[0]);
+	y.f32[1] = floorf(x->f32[1]);
+	y.f32[2] = floorf(x->f32[2]);
+	y.f32[3] = floorf(x->f32[3]);
+	return y;
+}
+
+static inline Vec4f_t Vec4f_Ceil(const Vec4f_t *x) {
+	Vec4f_t y;
+	y.f32[0] = ceilf(x->f32[0]);
+	y.f32[1] = ceilf(x->f32[1]);
+	y.f32[2] = ceilf(x->f32[2]);
+	y.f32[3] = ceilf(x->f32[3]);
+	return y;
+}
+
 static inline Vec4f_t Vec4f_Quantize(const Vec4f_t *x, const Vec4f_t *Depth) {
 	Vec4f_t y = Vec4f_Mul(x, Depth);
 	        y = Vec4f_Round(&y);
+	return Vec4f_DivSafe(&y, Depth, NULL);
+}
+
+static inline Vec4f_t Vec4f_QuantizeFloor(const Vec4f_t *x, const Vec4f_t *Depth) {
+	Vec4f_t y = Vec4f_Mul(x, Depth);
+	        y = Vec4f_Floor(&y);
+	return Vec4f_DivSafe(&y, Depth, NULL);
+}
+
+static inline Vec4f_t Vec4f_QuantizeCeil(const Vec4f_t *x, const Vec4f_t *Depth) {
+	Vec4f_t y = Vec4f_Mul(x, Depth);
+	        y = Vec4f_Ceil(&y);
 	return Vec4f_DivSafe(&y, Depth, NULL);
 }
 
