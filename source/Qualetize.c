@@ -138,15 +138,15 @@ uint8_t CalculateTileColourValue(
 	//! colours are favoured with higher weights, because we want
 	//! to penalize the opposite condition (colourful and/or varied
 	//! /dark/ colours, where we can afford to ignore distortion).
-	TileValue[0] = wMean.f32[0];
+	TileValue[0] = 0.25f*wMean.f32[0];
 	TileValue[1] = wMean.f32[1];
 	TileValue[2] = wMean.f32[2];
 	TileValue[3] = wMean.f32[3];
-	TileValue[4] = Dev.f32[0];
+	TileValue[4] = 0.25f*Dev.f32[0];
 	TileValue[5] = Dev.f32[1];
 	TileValue[6] = Dev.f32[2];
 	TileValue[7] = Dev.f32[3];
-	*TileWeight = 0.1f + wMean.f32[0]*Mean.f32[3]*(Satur+Vec4f_Length(&Dev));
+	*TileWeight = Mean.f32[3]*((1.0f - wMean.f32[0]) + wMean.f32[0]*(1.0f+Satur));
 	return 1;
 }
 
@@ -325,17 +325,32 @@ uint8_t Qualetize(
 			const uint8_t *Src = (const uint8_t*)InputBitmap;
 			for(y=0;y<InputHeight;y++) for(x=0;x<InputWidth;x++) {
 				uint8_t Idx = Src[y*InputWidth+x];
-				BGRA8_t Col = (BGRA8_t){0,0,0,0};
-				if(Idx != 0 || !Plan->FirstColourIsTransparent) {
-					Col = InputPalette[Idx];
-					Col.a = 255;
+				BGRA8_t Col = InputPalette[Idx];
+				Col.a = 255;
+				if(
+					(Plan->FirstColourIsTransparent && Idx == 0) ||
+					(
+						Col.r == Plan->TransparentColour.r &&
+						Col.g == Plan->TransparentColour.g &&
+						Col.b == Plan->TransparentColour.b
+					)
+				) {
+					Col = (BGRA8_t){0,0,0,0};
 				}
 				InputPxData[y*InputWidth+x] = BGRA8_To_Vec4fRGBA(&Col);
 			}
 		} else {
 			const BGRA8_t *Src = (const BGRA8_t*)InputBitmap;
 			for(y=0;y<InputHeight;y++) for(x=0;x<InputWidth;x++) {
-				InputPxData[y*InputWidth+x] = BGRA8_To_Vec4fRGBA(&Src[y*InputWidth+x]);
+				BGRA8_t Col = Src[y*InputWidth+x];
+				if(Plan->TransparentColour.a != 0) {
+					if(
+						Col.r == Plan->TransparentColour.r &&
+						Col.g == Plan->TransparentColour.g &&
+						Col.b == Plan->TransparentColour.b
+					) Col = (BGRA8_t){0,0,0,0};
+				}
+				InputPxData[y*InputWidth+x] = BGRA8_To_Vec4fRGBA(&Col);
 			}
 		}
 
@@ -373,28 +388,52 @@ uint8_t Qualetize(
 			}
 
 			//! Store tile pixels
+			uint32_t nPxWritten = 0;
 			for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
-				uint8_t OutOfBounds = 0;
 				uint32_t vx = tx*Plan->TileWidth  + x;
 				uint32_t vy = ty*Plan->TileHeight + y;
-				if(vx >= InputWidth)  OutOfBounds = 1, vx = InputWidth-1;
-				if(vy >= InputHeight) OutOfBounds = 1, vy = InputHeight-1;
-				uint32_t PxOffs = vy*InputWidth + vx;
-				Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], Plan->Colourspace);
-				*ThisTilePxData++ = Px;
-				if(!OutOfBounds) InputPxData[PxOffs] = Px;
+				if(vx < InputWidth && vy < InputHeight) {
+					uint32_t PxOffs = vy*InputWidth + vx;
+					Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], Plan->Colourspace);
+					ThisTilePxData[nPxWritten++] = Px;
+					InputPxData[PxOffs] = Px;
+				}
 			}
+			if(nPxWritten < nPxPerTile) ThisTilePxData[nPxWritten].f32[0] = INFINITY;
 		}
 	}
 
 	//! Cluster tiles together by palette
 	if(Plan->nTilePalettes > 1) {
 		//! Set up the cluster pointers
-		uint32_t k;
+		uint32_t n, k;
 		float *NextPtr = (float*)(TileClusters + Plan->nTilePalettes);
 		for(k=0;k<Plan->nTilePalettes;k++) {
 			TileClusters[k].Centroid = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
 			TileClusters[k].Training = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
+		}
+
+		//! Renormalize tile values
+		float ValueMins[TILE_CLUSTER_DIMENSIONS];
+		float ValueMaxs[TILE_CLUSTER_DIMENSIONS];
+		for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) ValueMins[k] = +INFINITY;
+		for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) ValueMaxs[k] = -INFINITY;
+		for(n=0;n<nNonBlankTiles;n++) for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) {
+			float v = TileColourValues[n*TILE_CLUSTER_DIMENSIONS+k];
+			if(v < ValueMins[k]) ValueMins[k] = v;
+			if(v > ValueMaxs[k]) ValueMaxs[k] = v;
+		}
+		for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) {
+			//! I have no idea why, but adding a large bias of 1.0
+			//! improves results much better than adding a tiny bias.
+			float Range = ValueMaxs[k] - ValueMins[k];
+			float Scale = 1.0f / (1.0f + Range);
+			for(n=0;n<nNonBlankTiles;n++) {
+				//! For clustering purposes, we don't need to center before scaling
+				float *vp = &TileColourValues[n*TILE_CLUSTER_DIMENSIONS+k];
+				//*vp = (*vp - Mean) * Scale + Mean;
+				*vp *= Scale;
+			}
 		}
 
 		//! Perform actual clustering now
@@ -408,6 +447,7 @@ uint8_t Qualetize(
 			nNonBlankTiles,
 			ClusterListIndices,
 			TileClusterPasses,
+			0.0f,
 			TileClusterWeights
 		);
 		Clusterize_GetClusterIndices_u8(
@@ -449,6 +489,11 @@ uint8_t Qualetize(
 	//! And now cluster the palette colours
 	uint32_t PalIdx;
 	uint32_t nOutputColours = Plan->nPaletteColours;
+	float SplitRatio = Plan->SplitRatio;
+	if(SplitRatio < 0.0f) {
+		if(nOutputColours <= 16) SplitRatio = 0.0f;
+		else SplitRatio = 1.0f - powf(2.0f, 1.0f - (float)nOutputColours/16.0f);
+	}
 	if(Plan->FirstColourIsTransparent) nOutputColours--;
 	uint32_t ColourClusterPasses = Plan->nColourClusterPasses;
 	if(!ColourClusterPasses) ColourClusterPasses = DEFAULT_COLOURCLUSTER_PASSES / nOutputColours;
@@ -462,10 +507,15 @@ uint8_t Qualetize(
 				uint32_t k;
 				const Vec4f_t *Src = TilePxData + n*nPxPerTile;
 				for(k=0;k<nPxPerTile;k++) {
+					Vec4f_t Px = Src[k];
+
+					//! Stop after hitting the last pixel stored
+					if(Px.f32[0] == INFINITY) break;
+
 					//! If we have a transparent palette colour, then
 					//! don't add pixels with alpha=0.
-					if(!Plan->FirstColourIsTransparent || Src[k].f32[3] != 0.0f) {
-						ColourClusterBuffer[DataCnt++] = Src[k];
+					if(!Plan->FirstColourIsTransparent || Px.f32[3] != 0.0f) {
+						ColourClusterBuffer[DataCnt++] = Px;
 					}
 				}
 			}
@@ -484,6 +534,7 @@ uint8_t Qualetize(
 				DataCnt,
 				ClusterListIndices,
 				ColourClusterPasses,
+				SplitRatio,
 				NULL
 			);
 			for(n=nOutputClusters;n<nOutputColours;n++) {
@@ -530,6 +581,7 @@ uint8_t Qualetize(
 				nOutputColours,
 				ClusterListIndices,
 				PALETTE_SORT_PASSES,
+				0.0f,
 				NULL
 			);
 
@@ -589,7 +641,7 @@ uint8_t Qualetize(
 
 	//! Finally, convert the palette from perceptual space to RGB space
 	for(PalIdx=0;PalIdx<Plan->nTilePalettes;PalIdx++) {
-		uint32_t n;
+		uint32_t n, k;
 		BGRA8_t *Dst = OutputPalette + PalIdx*Plan->nPaletteColours;
 		Vec4f_t *Src = PaletteData   + PalIdx*Plan->nPaletteColours;
 		Vec4f_t vZeros = Vec4f_Broadcast(0.0f);
@@ -607,12 +659,23 @@ uint8_t Qualetize(
 			}
 			x = Vec4f_Max(&x, &vZeros);
 			x = Vec4f_Min(&x, &vOnes);
-			x = Vec4f_Quantize(&x, &Plan->ColourDepth);
-			Dst[n] = Vec4fRGBA_To_BGRA8(&x);
+			Vec4f_t xq = Vec4f_Quantize(&x, &Plan->ColourDepth);
+			for(k=0;k<n;k++) {
+				//! If we already quantized to this exact colour,
+				//! split to floor/ceiling modes to get a better
+				//! chance at error dithering
+				Vec4f_t xk = BGRA8_To_Vec4fRGBA(&Dst[k]);
+				if(Vec4f_Dist2(&xq, &xk) == 0.0f) {
+					xq = Vec4f_QuantizeFloor(&x, &Plan->ColourDepth);
+					Dst[k] = Vec4fRGBA_To_BGRA8(&xq);
+					xq = Vec4f_QuantizeCeil(&x, &Plan->ColourDepth);
+				}
+			}
+			Dst[n] = Vec4fRGBA_To_BGRA8(&xq);
 
 			//! Pre-multiply by alpha again and convert to final colourspace
-			if(!Plan->PremultipliedAlpha) x = Vec4f_Muli(&x, x.f32[3]);
-			Src[n] = ConvertToColourspace(&x, Plan->Colourspace);
+			if(!Plan->PremultipliedAlpha) xq = Vec4f_Muli(&xq, xq.f32[3]);
+			Src[n] = ConvertToColourspace(&xq, Plan->Colourspace);
 		}
 	}
 
@@ -625,7 +688,7 @@ uint8_t Qualetize(
 		InputWidth,
 		InputHeight,
 		Plan->DitherType,
-		(float)Plan->DitherLevel / 32768.0f,
+		Plan->DitherLevel,
 		Plan->TileWidth,
 		Plan->TileHeight,
 		Plan->nPaletteColours,

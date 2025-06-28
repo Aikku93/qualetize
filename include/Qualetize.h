@@ -41,10 +41,12 @@ struct QualetizePlan_t {
 	uint8_t  FirstColourIsTransparent; //! 0 = All palette entries used,  1 = First palette entry is always (0,0,0,0)
 	uint8_t  PremultipliedAlpha;       //! 0 = Multiply colours by alpha, 1 = Colours are pre-multiplied by alpha
 	uint8_t  DitherType;               //! Dithering to apply on final output
-	uint16_t DitherLevel;              //! Dithering level to use on final output (0 = None, 8000h = 100%)
+	float    DitherLevel;              //! Dithering level to use on final output (0 = None, 1.0 = 100%)
+	float    SplitRatio;               //! Cluster splitting ratio (0.0 = Minimum, 1.0 = Maximum)
 	uint32_t nTileClusterPasses;       //! Number of clustering passes to apply on tiles
 	uint32_t nColourClusterPasses;     //! Number of clustering passes to apply on tile colours
 	Vec4f_t  ColourDepth;              //! RGBA levels for output image
+	BGRA8_t  TransparentColour;        //! RGB value of transparent colour (only used if alpha != 0)
 };
 
 /************************************************/
