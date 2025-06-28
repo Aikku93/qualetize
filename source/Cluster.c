@@ -58,6 +58,7 @@ uint32_t Clusterize_Process(
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
 	uint32_t nPasses,
+	float    SplitRatio,
 	const float *Weights
 ) {
 	return TClusterize_Process(
@@ -67,6 +68,7 @@ uint32_t Clusterize_Process(
 		nDataPoints,
 		ClusterListIndices,
 		nPasses,
+		SplitRatio,
 		Weights,
 		nDims
 	);

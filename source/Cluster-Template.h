@@ -98,6 +98,7 @@ static inline uint32_t TClusterize_Process(
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
 	uint32_t nPasses,
+	float    SplitRatio,
 	const float *Weights,
 	uint32_t nDims
 ) {
@@ -125,7 +126,7 @@ static inline uint32_t TClusterize_Process(
 		//! Note that we are splitting out the most distorted point
 		//! of the most distorted cluster, NOT the most distorted
 		//! point general. This is an important distinction.
-		float ThisSplitDistortion = LastSplitDistortion;
+		float ThisSplitDistortion = LastSplitDistortion * SplitRatio;
 		do {
 			//! Stop splitting once we've reached clusters with low distortion.
 			//! The idea is to only split highly distorted clusters, so that
@@ -135,7 +136,7 @@ static inline uint32_t TClusterize_Process(
 			uint32_t DstCluster = nCurrentClusters++;
 			TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
 			ThisSplitDistortion -= Clusters[SrcCluster].TotalDist;
-			if(ThisSplitDistortion < 0.25f*LastSplitDistortion) break;
+			if(ThisSplitDistortion < 0) break;
 		} while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST);
 
 		//! Begin refinement loop
