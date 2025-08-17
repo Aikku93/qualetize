@@ -7,6 +7,13 @@
 #include "Qualetize.h"
 #include "Vec4f.h"
 /************************************************/
+/*!
+
+All inverse matrices were derived from the floating-point input matrices,
+so the numerical values might be different from an exact representation.
+
+!*/
+/************************************************/
 
 //! Convert sRGB <-> Linear RGB
 static float RGBtoLinearRGB(float t) {
@@ -46,9 +53,9 @@ static Vec4f_t ConvertRGBtoXYZ(const Vec4f_t *x) {
 }
 static Vec4f_t ConvertXYZtoRGB(const Vec4f_t *x) {
 	Vec4f_t t;
-	t.f32[0] = LinearRGBtoRGB( 3.240440f*x->f32[0] - 1.537001f*x->f32[1] - 0.499315f*x->f32[2]);
-	t.f32[1] = LinearRGBtoRGB(-0.969205f*x->f32[0] + 1.875807f*x->f32[1] + 0.042506f*x->f32[2]);
-	t.f32[2] = LinearRGBtoRGB( 0.055641f*x->f32[0] - 0.204021f*x->f32[1] + 1.057208f*x->f32[2]);
+	t.f32[0] = LinearRGBtoRGB( 3.24048137e+0f*x->f32[0] - 1.53715153e+0f*x->f32[1] - 4.98536343e-1f*x->f32[2]);
+	t.f32[1] = LinearRGBtoRGB(-9.69254927e-1f*x->f32[0] + 1.87598996e+0f*x->f32[1] + 4.15559336e-2f*x->f32[2]);
+	t.f32[2] = LinearRGBtoRGB( 5.56466383e-2f*x->f32[0] - 2.04041335e-1f*x->f32[1] + 1.05731104e+0f*x->f32[2]);
 	t.f32[3] = x->f32[3];
 	return t;
 }
@@ -106,9 +113,9 @@ static Vec4f_t ConvertRGBtoLMS(const Vec4f_t *x) {
 }
 static Vec4f_t ConvertLMStoRGB(const Vec4f_t *x) {
 	Vec4f_t t;
-	t.f32[0] = LinearRGBtoRGB( 4.076744f*x->f32[0] - 3.307714f*x->f32[1] + 0.230970f*x->f32[2]);
-	t.f32[1] = LinearRGBtoRGB(-1.268435f*x->f32[0] + 2.609754f*x->f32[1] - 0.341319f*x->f32[2]);
-	t.f32[2] = LinearRGBtoRGB(-0.004194f*x->f32[0] - 0.703420f*x->f32[1] + 1.707614f*x->f32[2]);
+	t.f32[0] = LinearRGBtoRGB( 4.07674369e+0f*x->f32[0] - 3.30771407e+0f*x->f32[1] + 2.30970251e-1f*x->f32[2]);
+	t.f32[1] = LinearRGBtoRGB(-1.26843510e+0f*x->f32[0] + 2.60975421e+0f*x->f32[1] - 3.41319079e-1f*x->f32[2]);
+	t.f32[2] = LinearRGBtoRGB(-4.19436030e-3f*x->f32[0] - 7.03419579e-1f*x->f32[1] + 1.70761392e+0f*x->f32[2]);
 	t.f32[3] = x->f32[3];
 	return t;
 }
@@ -127,9 +134,9 @@ static Vec4f_t ConvertLMStoICtCp(const Vec4f_t *x) {
 }
 static Vec4f_t ConvertICtCpToLMS(const Vec4f_t *x) {
 	Vec4f_t t;
-	float Lp = (x->f32[0] + 0.015719f*x->f32[1] + 0.209581f*x->f32[2]);
-	float Mp = (x->f32[0] - 0.015719f*x->f32[1] - 0.209581f*x->f32[2]);
-	float Sp = (x->f32[0] + 1.021271f*x->f32[1] - 0.605274f*x->f32[2]);
+	float Lp = (x->f32[0] + 1.57186884e-2f*x->f32[1] + 2.09581024e-1f*x->f32[2]);
+	float Mp = (x->f32[0] - 1.57186884e-2f*x->f32[1] - 2.09581024e-1f*x->f32[2]);
+	float Sp = (x->f32[0] + 1.02127076e+0f*x->f32[1] - 6.05274471e-1f*x->f32[2]);
 	t.f32[0] = Lp*Lp;
 	t.f32[1] = Mp*Mp;
 	t.f32[2] = Sp*Sp;
@@ -151,9 +158,9 @@ static Vec4f_t ConvertLMStoOklab(const Vec4f_t *x) {
 }
 static Vec4f_t ConvertOklabToLMS(const Vec4f_t *x) {
 	Vec4f_t t;
-	float Lp = x->f32[0] + 0.396338f*x->f32[1] + 0.215804f*x->f32[2];
-	float Mp = x->f32[0] - 0.105561f*x->f32[1] - 0.063854f*x->f32[2];
-	float Sp = x->f32[0] - 0.089484f*x->f32[1] - 1.291485f*x->f32[2];
+	float Lp = x->f32[0] + 3.96338021e-1f*x->f32[1] + 2.15804027e-1f*x->f32[2];
+	float Mp = x->f32[0] - 1.05561239e-1f*x->f32[1] - 6.38540791e-2f*x->f32[2];
+	float Sp = x->f32[0] - 8.94840979e-2f*x->f32[1] - 1.29148508e+0f*x->f32[2];
 	t.f32[0] = Lp*Lp*Lp;
 	t.f32[1] = Mp*Mp*Mp;
 	t.f32[2] = Sp*Sp*Sp;
@@ -267,9 +274,9 @@ static Vec4f_t ConvertFromColourspace(const Vec4f_t *x, uint8_t Colourspace) {
 		} break;
 		case COLOURSPACE_YCBCR:
 		case COLOURSPACE_YCBCR_PSY: {
-			Out.f32[0] = In.f32[0] - 0.000152f*In.f32[1] + 1.574765f*In.f32[2];
-			Out.f32[1] = In.f32[0] - 0.187280f*In.f32[1] - 0.468125f*In.f32[2];
-			Out.f32[2] = In.f32[0] + 1.855610f*In.f32[1] + 0.000106f*In.f32[2];
+			Out.f32[0] = In.f32[0] - 1.51498563e-4f*In.f32[1] + 1.57476529e+0f*In.f32[2];
+			Out.f32[1] = In.f32[0] - 1.87280215e-1f*In.f32[1] - 4.68124612e-1f*In.f32[2];
+			Out.f32[2] = In.f32[0] + 1.85560969e+0f*In.f32[1] + 1.05765138e-4f*In.f32[2];
 			Out.f32[3] = In.f32[3];
 		} break;
 		case COLOURSPACE_YCOCG:
