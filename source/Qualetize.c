@@ -55,7 +55,10 @@ static BGRA8_t Vec4fRGBA_To_BGRA8(const Vec4f_t *x) {
 /************************************************/
 
 //! Calculate the colour value of a tile
-uint8_t CalculateTileColourValue(
+static float GetTileChromaWeight(const struct QualetizePlan_t *Plan) {
+	return sqrtf((float)(Plan->nPaletteColours - !!Plan->FirstColourIsTransparent));
+}
+static uint8_t CalculateTileColourValue(
 	float *TileValue,
 	float *TileWeight,
 	const Vec4f_t *InputPxData,
@@ -63,6 +66,7 @@ uint8_t CalculateTileColourValue(
 	uint32_t TileY,
 	uint32_t InputWidth,
 	uint32_t InputHeight,
+	float    TileChromaWeight,
 	const struct QualetizePlan_t *Plan
 ) {
 	//! Convert colours to Lab space, find the mean, and check opacity
@@ -70,83 +74,66 @@ uint8_t CalculateTileColourValue(
 	//! In general, Oklab seems to preserve smooth gradients better,
 	//! but CIELab preserves colour information a lot better.
 	uint32_t x, y;
-	uint32_t nSampledPoints = 0;
-	Vec4f_t  Mean  = VEC4F_EMPTY, Var = VEC4F_EMPTY;
-	Vec4f_t wMean  = VEC4F_EMPTY;
-	float   wMeanW = 0.0f;
+	Vec4f_t  Mean    = VEC4F_EMPTY;
+	Vec4f_t  Mean2   = VEC4F_EMPTY;
+	float    Weight  = 0.0f;
+	float    Weight2 = 0.0f;
 	for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
 		uint32_t vx = TileX*Plan->TileWidth  + x;
 		uint32_t vy = TileY*Plan->TileHeight + y;
 		if(vx < InputWidth && vy < InputHeight) {
 			uint32_t PxOffs = vy*InputWidth + vx;
-			Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], COLOURSPACE_CIELAB);
-			if(!Plan->FirstColourIsTransparent || Px.f32[3] != 0.0f) {
-				float w = Px.f32[0] * Px.f32[3];
-				Vec4f_t Px2 = Vec4f_Mul(&Px, &Px);
-				Vec4f_t wPx = Vec4f_Muli(&Px, w);
-				Mean  = Vec4f_Add(&Mean,  &Px);
-				Var   = Vec4f_Add(&Var,   &Px2);
-				wMean = Vec4f_Add(&wMean, &wPx);
-				wMeanW += w;
-				nSampledPoints++;
-			}
+			Vec4f_t Px  = ConvertToColourspace(&InputPxData[PxOffs], COLOURSPACE_CIELAB);
+			Vec4f_t Px2 = Vec4f_Mul(&Px, &Px);
+			Mean     = Vec4f_Add(&Mean,  &Px);
+			Mean2    = Vec4f_Add(&Mean2, &Px2);
+			Weight  += Px.f32[3];
+			Weight2 += Px.f32[3]*Px.f32[3];
 		}
 	}
 
 	//! If tile is fully transparent AND we have a forced transparent
 	//! palette colour, then we can skip processing this tile
-	if(Plan->FirstColourIsTransparent && !nSampledPoints) return 0;
+	if(Plan->FirstColourIsTransparent && Weight == 0.0f) return 0;
 
-	//! Normalize means and variance, calculate standard deviation
-	Vec4f_t Mean2, Dev;
-	static const Vec4f_t Zero = VEC4F_EMPTY;
-	Mean  = Vec4f_Divi(&Mean, (float)nSampledPoints);
-	Var   = Vec4f_Divi(&Var,  (float)nSampledPoints);
-	wMean = (wMeanW != 0.0f) ? Vec4f_Divi(&wMean, wMeanW) : Mean;
-	Mean2 = Vec4f_Mul(&Mean, &Mean);
-	Var   = Vec4f_Sub(&Var, &Mean2);
-	Var   = Vec4f_Max(&Var, &Zero); //! <- Protect against round-off error before square root
-	Dev   = Vec4f_Sqrt(&Var);
-
-	//! Calculate saturation of the weighted-mean colours.
-	//! The colours were weighted by luma and alpha, such that we
-	//! give more importance to brighter and more opaque colours
-	//! than darker and/or translucent colours.
-	//! We use the saturation as a cluster weight, because we want
-	//! less-saturated clusters to get fewer palettes, as we can
-	//! instead re-distribute them to more colourful tiles, which
-	//! should result in less averaging of very different colours,
-	//! and thus reduce the amount of desaturation that happens.
-	//! Also note that we weight the saturation again, by the luma
-	//! component - a colourful-but-dark tile is unimportant.
-	float Luma2   = wMean.f32[0]*wMean.f32[0];
-	float Chroma2 = wMean.f32[1]*wMean.f32[1] + wMean.f32[2]*wMean.f32[2];
-	float Satur   = (Luma2 > 0.0f) ? sqrtf(Chroma2 / (Luma2 + Chroma2)) : 0.0f;
+	//! Normalize means, calculate standard deviation
+	//! Note that this removes the pre-multiplied alpha!
+	Vec4f_t Dev; {
+		static const Vec4f_t Zero = VEC4F_EMPTY;
+		Mean  = Vec4f_Divi(&Mean,  Weight);
+		Mean2 = Vec4f_Divi(&Mean2, Weight2);
+		Dev   = Vec4f_Mul(&Mean,  &Mean);
+		Dev   = Vec4f_Sub(&Mean2, &Dev);
+		Dev   = Vec4f_Max(&Dev,   &Zero); //! <- Protect against round-off error before square root
+		Dev   = Vec4f_Sqrt(&Dev);
+	}
 
 	//! Fill the tile data.
-	//! Note that we further weight by the average alpha (not the
-	//! weighted average alpha!), since low-alpha areas can be
-	//! banded together into fewer palettes with few issues.
-	//! Finally, we combine saturation and the amount of deviation
-	//! into a single weight quantity: we want saturated tiles to
-	//! split into more palettes as needed, and we also want tiles
-	//! with high variance to split into more palettes; for tiles
-	//! that are saturated and have high variance, we want these
-	//! to have higher priority for splitting.
-	//! Note that this latter saturation is itself weighted by the
-	//! weighted average luma, such that brighter/more prominent
-	//! colours are favoured with higher weights, because we want
-	//! to penalize the opposite condition (colourful and/or varied
-	//! /dark/ colours, where we can afford to ignore distortion).
-	TileValue[0] = 0.25f*wMean.f32[0];
-	TileValue[1] = wMean.f32[1];
-	TileValue[2] = wMean.f32[2];
-	TileValue[3] = wMean.f32[3];
-	TileValue[4] = 0.25f*Dev.f32[0];
-	TileValue[5] = Dev.f32[1];
-	TileValue[6] = Dev.f32[2];
+	//! * We weight the luma inversely proportional to the number
+	//!   of entries per palette. Thus, if we have very few colours
+	//!   available per palette, luma gets more importance, so that
+	//!   we are more likely to split palettes based on luma.
+	//!   Conversely, if we have many colours available per palette,
+	//!   luma becomes less important, as we can just create more
+	//!   luma variation inside the palette instead.
+	//!   Alpha gets the same treatment for the same reasoning.
+	//!   See GetTileChromaWeight() (factored out for performance);
+	//!   we actually multiply chroma by the inverse for readability.
+	//! * We also weight each tile by the amount of "power" in its
+	//!   colour components. Thus, a tile with low activity (ie. a
+	//!   dark and/or desaturated tile) gets lower weight than a
+	//!   tile with high activity (ie. bright, saturated tiles).
+	//!   Note that alpha multiplies the power, rather than being
+	//!   included as part of the calculation!
+	TileValue[0] = Mean.f32[0];
+	TileValue[1] = Mean.f32[1] * TileChromaWeight;
+	TileValue[2] = Mean.f32[2] * TileChromaWeight;
+	TileValue[3] = Mean.f32[3];
+	TileValue[4] = Dev.f32[0];
+	TileValue[5] = Dev.f32[1] * TileChromaWeight;
+	TileValue[6] = Dev.f32[2] * TileChromaWeight;
 	TileValue[7] = Dev.f32[3];
-	*TileWeight = Mean.f32[3]*((1.0f - wMean.f32[0]) + wMean.f32[0]*(1.0f+Satur));
+	*TileWeight = Mean.f32[3] * sqrtf(Mean2.f32[0] + Mean2.f32[1] + Mean2.f32[2]) + 1.0e-10f;
 	return 1;
 }
 
@@ -367,6 +354,7 @@ uint8_t Qualetize(
 
 		//! Chop up the image into tiles and store their pixels
 		uint32_t tx, ty;
+		float TileChromaWeight = GetTileChromaWeight(Plan);
 		for(ty=0;ty<nTilesY;ty++) for(tx=0;tx<nTilesX;tx++) {
 			uint32_t TileIdx = ty*nTilesX + tx;
 			Vec4f_t *ThisTilePxData = TilePxData + TileIdx*nPxPerTile;
@@ -380,6 +368,7 @@ uint8_t Qualetize(
 				ty,
 				InputWidth,
 				InputHeight,
+				TileChromaWeight,
 				Plan
 			)) {
 				nNonBlankTiles++;
@@ -406,34 +395,11 @@ uint8_t Qualetize(
 	//! Cluster tiles together by palette
 	if(Plan->nTilePalettes > 1) {
 		//! Set up the cluster pointers
-		uint32_t n, k;
+		uint32_t k;
 		float *NextPtr = (float*)(TileClusters + Plan->nTilePalettes);
 		for(k=0;k<Plan->nTilePalettes;k++) {
 			TileClusters[k].Centroid = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
 			TileClusters[k].Training = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
-		}
-
-		//! Renormalize tile values
-		float ValueMins[TILE_CLUSTER_DIMENSIONS];
-		float ValueMaxs[TILE_CLUSTER_DIMENSIONS];
-		for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) ValueMins[k] = +INFINITY;
-		for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) ValueMaxs[k] = -INFINITY;
-		for(n=0;n<nNonBlankTiles;n++) for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) {
-			float v = TileColourValues[n*TILE_CLUSTER_DIMENSIONS+k];
-			if(v < ValueMins[k]) ValueMins[k] = v;
-			if(v > ValueMaxs[k]) ValueMaxs[k] = v;
-		}
-		for(k=0;k<TILE_CLUSTER_DIMENSIONS;k++) {
-			//! I have no idea why, but adding a large bias of 1.0
-			//! improves results much better than adding a tiny bias.
-			float Range = ValueMaxs[k] - ValueMins[k];
-			float Scale = 1.0f / (1.0f + Range);
-			for(n=0;n<nNonBlankTiles;n++) {
-				//! For clustering purposes, we don't need to center before scaling
-				float *vp = &TileColourValues[n*TILE_CLUSTER_DIMENSIONS+k];
-				//*vp = (*vp - Mean) * Scale + Mean;
-				*vp *= Scale;
-			}
 		}
 
 		//! Perform actual clustering now
