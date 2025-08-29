@@ -98,7 +98,8 @@ static uint8_t CalculateTileColourValue(
 
 	//! Normalize means, calculate standard deviation
 	//! Note that this removes the pre-multiplied alpha!
-	Vec4f_t Dev; {
+	Vec4f_t Dev;
+	if(Weight) {
 		static const Vec4f_t Zero = VEC4F_EMPTY;
 		Mean  = Vec4f_Divi(&Mean,  Weight);
 		Mean2 = Vec4f_Divi(&Mean2, Weight2);
@@ -106,7 +107,7 @@ static uint8_t CalculateTileColourValue(
 		Dev   = Vec4f_Sub(&Mean2, &Dev);
 		Dev   = Vec4f_Max(&Dev,   &Zero); //! <- Protect against round-off error before square root
 		Dev   = Vec4f_Sqrt(&Dev);
-	}
+	} else Dev = VEC4F_EMPTY;
 
 	//! Fill the tile data.
 	//! * We weight the luma inversely proportional to the number
