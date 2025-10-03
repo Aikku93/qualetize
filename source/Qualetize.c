@@ -358,12 +358,12 @@ uint8_t Qualetize(
 		float TileChromaWeight = GetTileChromaWeight(Plan);
 		for(ty=0;ty<nTilesY;ty++) for(tx=0;tx<nTilesX;tx++) {
 			uint32_t TileIdx = ty*nTilesX + tx;
-			Vec4f_t *ThisTilePxData = TilePxData + TileIdx*nPxPerTile;
+			Vec4f_t *ThisTilePxData = TilePxData + nNonBlankTiles*nPxPerTile;
 
 			//! Calculate this tile's value (for tile clustering)
 			if(CalculateTileColourValue(
 				TileColourValues + nNonBlankTiles*TILE_CLUSTER_DIMENSIONS,
-				&TileClusterWeights[TileIdx],
+				&TileClusterWeights[nNonBlankTiles],
 				InputPxData,
 				tx,
 				ty,
@@ -373,23 +373,21 @@ uint8_t Qualetize(
 				Plan
 			)) {
 				nNonBlankTiles++;
-			} else {
-				*--BlankTileIndices = TileIdx;
-			}
 
-			//! Store tile pixels
-			uint32_t nPxWritten = 0;
-			for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
-				uint32_t vx = tx*Plan->TileWidth  + x;
-				uint32_t vy = ty*Plan->TileHeight + y;
-				if(vx < InputWidth && vy < InputHeight) {
-					uint32_t PxOffs = vy*InputWidth + vx;
-					Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], Plan->Colourspace);
-					ThisTilePxData[nPxWritten++] = Px;
-					InputPxData[PxOffs] = Px;
+				//! Store tile pixels
+				uint32_t nPxWritten = 0;
+				for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
+					uint32_t vx = tx*Plan->TileWidth  + x;
+					uint32_t vy = ty*Plan->TileHeight + y;
+					if(vx < InputWidth && vy < InputHeight) {
+						uint32_t PxOffs = vy*InputWidth + vx;
+						Vec4f_t Px = ConvertToColourspace(&InputPxData[PxOffs], Plan->Colourspace);
+						ThisTilePxData[nPxWritten++] = Px;
+						InputPxData[PxOffs] = Px;
+					}
 				}
-			}
-			if(nPxWritten < nPxPerTile) ThisTilePxData[nPxWritten].f32[0] = INFINITY;
+				if(nPxWritten < nPxPerTile) ThisTilePxData[nPxWritten].f32[0] = INFINITY;
+			} else *--BlankTileIndices = TileIdx;
 		}
 	}
 
@@ -429,21 +427,19 @@ uint8_t Qualetize(
 		//! Note that this loop works backwards, since we have to expand
 		//! the data out, and going forwards would overwrite the data.
 		if(BlankTileIndices < BlankTileIndicesEnd) {
-			uint32_t NextTileIdx = nTilesTotal-1;
+			uint32_t NextTileIdx = nTilesTotal;
 			      uint8_t *TileIndexDst = TilePaletteIndices + nTilesTotal;
 			const uint8_t *TileIndexSrc = TilePaletteIndices + nNonBlankTiles;
 			do {
 				uint32_t NextBlankTileIdx = *BlankTileIndices++;
 
 				//! Write non-empty tile indices
-				while(NextTileIdx > NextBlankTileIdx) {
+				while(--NextTileIdx > NextBlankTileIdx) {
 					*--TileIndexDst = *--TileIndexSrc;
-					NextTileIdx--;
 				}
 
 				//! And now set the index of the empty tile
-				*--TileIndexDst = 0;
-				NextTileIdx--;
+				*--TileIndexDst = 0xFF;
 			} while(BlankTileIndices < BlankTileIndicesEnd);
 		}
 	} else {
@@ -468,13 +464,17 @@ uint8_t Qualetize(
 		//! Read pixels of all tiles falling into this palette
 		uint32_t n;
 		uint32_t DataCnt = 0;
-		const uint8_t *PalIndices = TilePaletteIndices;
+		const Vec4f_t *TilePxSrc = TilePxData;
 		for(n=0;n<nTilesTotal;n++) {
-			if(PalIndices[n] == PalIdx) {
+			if(TilePaletteIndices[n] == 0xFF) {
+				//! Empty tile - we didn't store pixels for
+				//! it, so skip without doing anything else
+				continue;
+			}
+			if(TilePaletteIndices[n] == PalIdx) {
 				uint32_t k;
-				const Vec4f_t *Src = TilePxData + n*nPxPerTile;
 				for(k=0;k<nPxPerTile;k++) {
-					Vec4f_t Px = Src[k];
+					Vec4f_t Px = TilePxSrc[k];
 
 					//! Stop after hitting the last pixel stored
 					if(Px.f32[0] == INFINITY) break;
@@ -486,6 +486,7 @@ uint8_t Qualetize(
 					}
 				}
 			}
+			TilePxSrc += nPxPerTile;
 		}
 
 		//! Perform cluster analysis
@@ -602,6 +603,16 @@ uint8_t Qualetize(
 			);
 			for(n=0;n<nOutputColours;n++) {
 				ThisPalette[n] = ConvertToColourspace(&ThisPalette[n], Plan->Colourspace);
+			}
+		}
+	}
+
+	//! Force all empty tiles to palette 0
+	if(Plan->FirstColourIsTransparent) {
+		uint32_t n;
+		for(n=0;n<nTilesTotal;n++) {
+			if(TilePaletteIndices[n] == 0xFF) {
+				TilePaletteIndices[n] = 0;
 			}
 		}
 	}
