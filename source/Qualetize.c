@@ -117,15 +117,8 @@ static uint8_t CalculateTileColourValue(
 	//!   Conversely, if we have many colours available per palette,
 	//!   luma becomes less important, as we can just create more
 	//!   luma variation inside the palette instead.
-	//!   Alpha gets the same treatment for the same reasoning.
 	//!   See GetTileChromaWeight() (factored out for performance);
 	//!   we actually multiply chroma by the inverse for readability.
-	//! * We also weight each tile by the amount of "power" in its
-	//!   colour components. Thus, a tile with low activity (ie. a
-	//!   dark and/or desaturated tile) gets lower weight than a
-	//!   tile with high activity (ie. bright, saturated tiles).
-	//!   Note that alpha multiplies the power, rather than being
-	//!   included as part of the calculation!
 	TileValue[0] = Mean.f32[0];
 	TileValue[1] = Mean.f32[1] * TileChromaWeight;
 	TileValue[2] = Mean.f32[2] * TileChromaWeight;
@@ -134,7 +127,7 @@ static uint8_t CalculateTileColourValue(
 	TileValue[5] = Dev.f32[1] * TileChromaWeight;
 	TileValue[6] = Dev.f32[2] * TileChromaWeight;
 	TileValue[7] = Dev.f32[3];
-	*TileWeight = Mean.f32[3] * sqrtf(Mean2.f32[0] + Mean2.f32[1] + Mean2.f32[2]) + 1.0e-10f;
+	*TileWeight = Mean.f32[3] + 1.0e-10f;
 	return 1;
 }
 
