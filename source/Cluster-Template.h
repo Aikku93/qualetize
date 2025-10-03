@@ -88,6 +88,34 @@ static uint8_t ResolveCluster(
 	return 1;
 }
 
+//! Split cluster in two
+static void SplitCluster(
+	TCluster_t *DstCluster,
+	TCluster_t *SrcCluster,
+	const TClusterData_t *Data,
+	const uint32_t *ClusterListIndices,
+	const float *Weights,
+	uint32_t nDims
+) {
+	//! First, set the destination cluster to the most distorted point
+	TCluster_SetCentroidToData(DstCluster, Data + SrcCluster->MaxDistIdx*nDims, nDims);
+
+	//! Now find the point furthest away from that for the source cluster
+	uint32_t Next = SrcCluster->FirstDataIdx;
+	uint32_t MaxDistIdx = Next;
+	float    MaxDistVal = -INFINITY;
+	while(Next != CLUSTER_END_OF_LIST) {
+		float w = Weights ? Weights[Next] : 1.0f;
+		float d = w * TCluster_Dist2ToCentroid(DstCluster, Data + Next*nDims, nDims);
+		if(d > MaxDistVal) {
+			MaxDistIdx = Next;
+			MaxDistVal = d;
+		}
+		Next = ClusterListIndices[Next];
+	}
+	TCluster_SetCentroidToData(SrcCluster, Data + MaxDistIdx*nDims, nDims);
+}
+
 /************************************************/
 
 //! Apply cluster analysis to the specified data
@@ -134,12 +162,16 @@ static inline uint32_t TClusterize_Process(
 			//! would give sub-optimal results.
 			uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
 			uint32_t DstCluster = nCurrentClusters++;
-			TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
+			SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
 			ThisSplitDistortion -= Clusters[SrcCluster].TotalDist;
 			if(ThisSplitDistortion < 0) break;
 		} while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST);
 
 		//! Begin refinement loop
+		//! Note that we subtract the target cluster variance from the
+		//! calculated distortion. The idea is that if we're within the
+		//! radius of one standard deviation of a cluster, we can use
+		//! it without having to split out a new cluster.
 		uint32_t Pass;
 		float LastPassDist = INFINITY;
 		for(Pass=0;Pass<nPasses;Pass++) {
@@ -182,7 +214,7 @@ static inline uint32_t TClusterize_Process(
 			while(DistClusterHead != CLUSTER_END_OF_LIST && EmptyClusterHead != CLUSTER_END_OF_LIST) {
 				uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
 				uint32_t DstCluster = PopEmptyClusterList    (Clusters, &EmptyClusterHead);
-				TCluster_SetCentroidToData(&Clusters[DstCluster], Data + Clusters[SrcCluster].MaxDistIdx*nDims, nDims);
+				SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
 			}
 
 			//! Early exit on convergence
