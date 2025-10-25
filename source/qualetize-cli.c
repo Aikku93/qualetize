@@ -137,15 +137,6 @@ int main(int argc, const char *argv[]) {
 			"                         16-colour palettes, a value between 32 and 64 should\n"
 			"                         result in convergence in most cases, while still being\n"
 			"                         of reasonable performance).\n"
-			"  -splitratio:-1       - Set the cluster splitting ratio. Clusters will stop\n"
-			"                         splitting after splitting all clusters with a total\n"
-			"                         distortion higher than this ratio times the global\n"
-			"                         distortion. A value of 1.0 will split all clusters\n"
-			"                         simultaneously (best performance, lower quality),\n"
-			"                         while a value of 0.0 will split only one cluster at a\n"
-			"                         time (worst performance, best quality).\n"
-			"                         A value of -1 will set the ratio automatically based\n"
-			"                         on the number of colours; Ratio = 1 - 2^(1-k/16).\n"
 			"  -col0isclear:y       - First colour of every palette is transparent (y/n)\n"
 			"                         Note that this affects both input AND output images.\n"
 			"                         To set transparency in a direct-colour input bitmap,\n"
@@ -190,7 +181,6 @@ int main(int argc, const char *argv[]) {
 	Plan.PremultipliedAlpha   = 0;
 	Plan.DitherType           = DITHER_FLOYDSTEINBERG;
 	Plan.DitherLevel          = 0.5f;
-	Plan.SplitRatio           = -1.0f;
 	Plan.Colourspace          = COLOURSPACE_YCBCR_PSY;
 	Plan.nTileClusterPasses   = 0;
 	Plan.nColourClusterPasses = 0;
@@ -242,7 +232,6 @@ int main(int argc, const char *argv[]) {
 			}
 			ARGMATCH(argv[argi], "-tilepasses:")   ArgOk = 1, Plan.nTileClusterPasses       = atoi(ArgStr);
 			ARGMATCH(argv[argi], "-colourpasses:") ArgOk = 1, Plan.nColourClusterPasses     = atoi(ArgStr);
-			ARGMATCH(argv[argi], "-splitratio:")   ArgOk = 1, Plan.SplitRatio               = atof(ArgStr);
 			ARGMATCH(argv[argi], "-col0isclear:")  ArgOk = 1, Plan.FirstColourIsTransparent = (ArgStr[0] == 'y') ? 1 : 0;
 			ARGMATCH(argv[argi], "-clearcol:") {
 				if(ParseClearColour(ArgStr, &Plan.TransparentColour) == -1) {
@@ -274,10 +263,6 @@ int main(int argc, const char *argv[]) {
 	}
 	if(Plan.nColourClusterPasses > 100) {
 		printf("WARNING: Colour cluster passes is very large (%u); this may be slow.\n", Plan.nColourClusterPasses);
-	}
-	if(Plan.SplitRatio > 1.0f || (Plan.SplitRatio < 0.0f && Plan.SplitRatio != -1.0f)) {
-		printf("ERROR: Cluster splitting ratio must be 0.0 ~ 1.0, or -1.\n");
-		return -1;
 	}
 
 	//! Open input image

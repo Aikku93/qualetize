@@ -24,9 +24,6 @@
 #define DEFAULT_TILECLUSTER_PASSES   1024
 #define DEFAULT_COLOURCLUSTER_PASSES 1024
 
-//! Number of passes to use for palette sorting
-#define PALETTE_SORT_PASSES 32
-
 /************************************************/
 
 //! Convert BGRA8 to native Vec4f type in RGBA format
@@ -55,46 +52,99 @@ static BGRA8_t Vec4fRGBA_To_BGRA8(const Vec4f_t *x) {
 /************************************************/
 
 //! Calculate the colour value of a tile
-static float GetTileChromaWeight(const struct QualetizePlan_t *Plan) {
-	return sqrtf((float)(Plan->nPaletteColours - !!Plan->FirstColourIsTransparent));
+static Vec4f_t GetPixelAt(
+	const Vec4f_t *Px,
+	 int32_t x,
+	 int32_t y,
+	uint32_t w,
+	uint32_t h
+) {
+	if(
+		x >= 0 &&
+		y >= 0 &&
+		(uint32_t)x < w &&
+		(uint32_t)y < h
+	) return ConvertToColourspace(&Px[y*w+x], COLOURSPACE_CIELAB);
+	else return VEC4F_EMPTY;
 }
 static uint8_t CalculateTileColourValue(
 	float *TileValue,
 	float *TileWeight,
-	const Vec4f_t *InputPxData,
+	Vec4f_t *WorkingSpace,
+	const Vec4f_t *PxData,
 	uint32_t TileX,
 	uint32_t TileY,
 	uint32_t InputWidth,
 	uint32_t InputHeight,
-	float    TileChromaWeight,
 	const struct QualetizePlan_t *Plan
 ) {
-	//! Convert colours to Lab space, find the mean, and check opacity
+	uint32_t x, y;
+
+	//! Convert colours to Lab space, find the mean, and apply the
+	//! horizontal pass of a Sobel filter for smoothness detection.
 	//! CIELab and Oklab work fine here, but have different strengths.
 	//! In general, Oklab seems to preserve smooth gradients better,
 	//! but CIELab preserves colour information a lot better.
-	uint32_t x, y;
+	//! Note that we iterate for dy=[-1,Height] for the Sobel filter!
+	int32_t  tx = (int32_t)(TileX*Plan->TileWidth);
+	int32_t  ty = (int32_t)(TileY*Plan->TileHeight);
 	Vec4f_t  Mean    = VEC4F_EMPTY;
 	Vec4f_t  Mean2   = VEC4F_EMPTY;
 	float    Weight  = 0.0f;
 	float    Weight2 = 0.0f;
-	for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
-		uint32_t vx = TileX*Plan->TileWidth  + x;
-		uint32_t vy = TileY*Plan->TileHeight + y;
-		if(vx < InputWidth && vy < InputHeight) {
-			uint32_t PxOffs = vy*InputWidth + vx;
-			Vec4f_t Px  = ConvertToColourspace(&InputPxData[PxOffs], COLOURSPACE_CIELAB);
-			Vec4f_t Px2 = Vec4f_Mul(&Px, &Px);
-			Mean     = Vec4f_Add(&Mean,  &Px);
-			Mean2    = Vec4f_Add(&Mean2, &Px2);
-			Weight  += Px.f32[3];
-			Weight2 += Px.f32[3]*Px.f32[3];
+	Vec4f_t *GradX = WorkingSpace;
+	Vec4f_t *GradY = WorkingSpace + Plan->TileWidth*(Plan->TileHeight+2u);
+	for(y=0;y<Plan->TileHeight+2u;y++) {
+		Vec4f_t PxL;
+		Vec4f_t PxM = GetPixelAt(PxData, tx   - 1, ty+y-1, InputWidth, InputHeight);
+		Vec4f_t PxR = GetPixelAt(PxData, tx+1 - 1, ty+y-1, InputWidth, InputHeight);
+		for(x=0;x<Plan->TileWidth;x++) {
+			//! Shuffle pixels and store filtered values
+			PxL = PxM;
+			PxM = PxR;
+			PxR = GetPixelAt(PxData, tx+x+1, ty+y-1, InputWidth, InputHeight);
+			Vec4f_t gx = Vec4f_Sub(&PxL, &PxR); //! gxx = [1,0,-1]
+			Vec4f_t gy = Vec4f_Add(&PxM, &PxM); //! gyx = [1,2,1]
+				gy = Vec4f_Add(&gy,  &PxL);
+				gy = Vec4f_Add(&gy,  &PxR);
+			GradX[y*Plan->TileWidth+x] = gx;
+			GradY[y*Plan->TileWidth+x] = gy;
+
+			//! Update means for pixels inside the tile
+			if(y > 1 && (y-1) < Plan->TileHeight) {
+				Vec4f_t Px2 = Vec4f_Mul(&PxM, &PxM);
+				Mean     = Vec4f_Add(&Mean,  &PxM);
+				Mean2    = Vec4f_Add(&Mean2, &Px2);
+				Weight  += PxM.f32[3];
+				Weight2 += PxM.f32[3]*PxM.f32[3];
+			}
 		}
 	}
 
 	//! If tile is fully transparent AND we have a forced transparent
 	//! palette colour, then we can skip processing this tile
 	if(Plan->FirstColourIsTransparent && Weight == 0.0f) return 0;
+
+	//! Finish applying Sobel operator, and get average magnitude.
+	//! RMS magnitude is faster to compute, but less useful.
+	float SobelMagnitude = 0.0f;
+	for(y=0;y<Plan->TileHeight;y++) for(x=0;x<Plan->TileWidth;x++) {
+		//! gxy = [1,2,1]
+		//! gyy = [1,0,-1]
+		int32_t Offs = (y+1)*Plan->TileWidth+x;
+		Vec4f_t gx = GradX[Offs];
+		        gx = Vec4f_Add(&gx, &gx);
+		        gx = Vec4f_Add(&gx, &GradX[Offs - Plan->TileWidth]);
+		        gx = Vec4f_Add(&gx, &GradX[Offs + Plan->TileWidth]);
+		Vec4f_t gy = Vec4f_Sub(&GradY[Offs - Plan->TileWidth], &GradY[Offs + Plan->TileWidth]);
+		SobelMagnitude += sqrtf(Vec4f_Length2(&gx) + Vec4f_Length2(&gy));
+	}
+	SobelMagnitude /= (float)(Plan->TileWidth * Plan->TileHeight);
+
+	//! We define the smoothness as the inverse of the magnitude.
+	//! Note the bias: We don't want to give smooth areas an
+	//! infinite weight, so we add a bias before dividing.
+	float Smoothness = 1.0f / (0.1f + SobelMagnitude);
 
 	//! Normalize means, calculate standard deviation
 	//! Note that this removes the pre-multiplied alpha!
@@ -109,25 +159,16 @@ static uint8_t CalculateTileColourValue(
 		Dev   = Vec4f_Sqrt(&Dev);
 	} else Dev = VEC4F_EMPTY;
 
-	//! Fill the tile data.
-	//! * We weight the luma inversely proportional to the number
-	//!   of entries per palette. Thus, if we have very few colours
-	//!   available per palette, luma gets more importance, so that
-	//!   we are more likely to split palettes based on luma.
-	//!   Conversely, if we have many colours available per palette,
-	//!   luma becomes less important, as we can just create more
-	//!   luma variation inside the palette instead.
-	//!   See GetTileChromaWeight() (factored out for performance);
-	//!   we actually multiply chroma by the inverse for readability.
+	//! Fill the tile data
 	TileValue[0] = Mean.f32[0];
-	TileValue[1] = Mean.f32[1] * TileChromaWeight;
-	TileValue[2] = Mean.f32[2] * TileChromaWeight;
+	TileValue[1] = Mean.f32[1];
+	TileValue[2] = Mean.f32[2];
 	TileValue[3] = Mean.f32[3];
 	TileValue[4] = Dev.f32[0];
-	TileValue[5] = Dev.f32[1] * TileChromaWeight;
-	TileValue[6] = Dev.f32[2] * TileChromaWeight;
+	TileValue[5] = Dev.f32[1];
+	TileValue[6] = Dev.f32[2];
 	TileValue[7] = Dev.f32[3];
-	*TileWeight = Mean.f32[3] + 1.0e-10f;
+	*TileWeight = Mean.f32[3]*Smoothness + 1.0e-10f;
 	return 1;
 }
 
@@ -181,9 +222,11 @@ uint8_t Qualetize(
 	Vec4f_t *InputPxData;
 
 	//! Pixels for tiles.
-	//! Contains ImageWidth*ImageHeight elements.
+	//! Contains (ImageWidth*ImageHeight)+(4*TileWidth) elements.
 	//! Each tile takes TileWidth*TileHeight elements, and the tiles are then stored
 	//! sequentially, in raster-scan order for simplicity.
+	//! Note that we add space for four tile lines; this space is used for
+	//! the Sobel gradient calculations.
 	Vec4f_t *TilePxData;
 
 	//! Palette data.
@@ -255,7 +298,7 @@ uint8_t Qualetize(
 #endif
 #define CREATE_BUFFER(Name, Sz) uint32_t Name##_Offs = AllocSize; AllocSize += (uint32_t)CREATE_BUFFER_ALIGN(Sz)
 		CREATE_BUFFER(InputPxData,         nPxTotal     * sizeof(Vec4f_t));
-		CREATE_BUFFER(TilePxData,          nPxTotal     * sizeof(Vec4f_t));
+		CREATE_BUFFER(TilePxData,         (nPxTotal + 4u*Plan->TileWidth) * sizeof(Vec4f_t));
 		CREATE_BUFFER(PaletteData,         TotalPalCols * sizeof(Vec4f_t));
 		CREATE_BUFFER(TilePaletteIndices,  nTilesTotal  * sizeof(uint8_t));
 		CREATE_BUFFER(TileColourValues,    nTilesTotal  * sizeof(float)*TILE_CLUSTER_DIMENSIONS);
@@ -348,7 +391,6 @@ uint8_t Qualetize(
 
 		//! Chop up the image into tiles and store their pixels
 		uint32_t tx, ty;
-		float TileChromaWeight = GetTileChromaWeight(Plan);
 		for(ty=0;ty<nTilesY;ty++) for(tx=0;tx<nTilesX;tx++) {
 			uint32_t TileIdx = ty*nTilesX + tx;
 			Vec4f_t *ThisTilePxData = TilePxData + nNonBlankTiles*nPxPerTile;
@@ -357,12 +399,12 @@ uint8_t Qualetize(
 			if(CalculateTileColourValue(
 				TileColourValues + nNonBlankTiles*TILE_CLUSTER_DIMENSIONS,
 				&TileClusterWeights[nNonBlankTiles],
+				ThisTilePxData,
 				InputPxData,
 				tx,
 				ty,
 				InputWidth,
 				InputHeight,
-				TileChromaWeight,
 				Plan
 			)) {
 				nNonBlankTiles++;
@@ -405,7 +447,7 @@ uint8_t Qualetize(
 			nNonBlankTiles,
 			ClusterListIndices,
 			TileClusterPasses,
-			0.0f,
+			10.0f,
 			TileClusterWeights
 		);
 		Clusterize_GetClusterIndices_u8(
@@ -445,11 +487,6 @@ uint8_t Qualetize(
 	//! And now cluster the palette colours
 	uint32_t PalIdx;
 	uint32_t nOutputColours = Plan->nPaletteColours;
-	float SplitRatio = Plan->SplitRatio;
-	if(SplitRatio < 0.0f) {
-		if(nOutputColours <= 16) SplitRatio = 0.0f;
-		else SplitRatio = 1.0f - powf(2.0f, 1.0f - (float)nOutputColours/16.0f);
-	}
 	if(Plan->FirstColourIsTransparent) nOutputColours--;
 	uint32_t ColourClusterPasses = Plan->nColourClusterPasses;
 	if(!ColourClusterPasses) ColourClusterPasses = DEFAULT_COLOURCLUSTER_PASSES / nOutputColours;
@@ -488,6 +525,7 @@ uint8_t Qualetize(
 		Vec4f_t UnusedColour = (Vec4f_t){{1.0f,0.0f,1.0f,1.0f}};
 		UnusedColour = ConvertToColourspace(&UnusedColour, Plan->Colourspace);
 		if(DataCnt != 0) {
+			//! Setting Sharpness higher improves PSNR, but looks worse!
 			uint32_t nOutputClusters = Clusterize_Vec4f_Process(
 				ColourClusters,
 				ColourClusterBuffer,
@@ -495,7 +533,7 @@ uint8_t Qualetize(
 				DataCnt,
 				ClusterListIndices,
 				ColourClusterPasses,
-				SplitRatio,
+				0.0f, //! <- No EKM, only standard k-means
 				NULL
 			);
 			for(n=nOutputClusters;n<nOutputColours;n++) {
@@ -541,7 +579,7 @@ uint8_t Qualetize(
 				nOutputColours,
 				nOutputColours,
 				ClusterListIndices,
-				PALETTE_SORT_PASSES,
+				0,
 				0.0f,
 				NULL
 			);
