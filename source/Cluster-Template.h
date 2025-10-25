@@ -44,7 +44,6 @@ static uint32_t PopEmptyClusterList(TCluster_t *Clusters, uint32_t *Head) {
 
 //! Clear training data
 static inline void ClearTraining(TCluster_t *x, uint32_t nDims) {
-	x->nPoints = 0;
 	x->TrainWeight = 0.0f;
 	TCluster_ClearTrainingVector(x, nDims);
 }
@@ -53,7 +52,6 @@ static inline void ClearTraining(TCluster_t *x, uint32_t nDims) {
 static inline void TrainCluster(TCluster_t *x, const TClusterData_t *Data, float w, uint32_t nDims) {
 	TCluster_AddToTraining(x, Data, w, nDims);
 	x->TrainWeight += w;
-	x->nPoints++;
 }
 
 //! Calculate cluster centroid and recalculate distortions
@@ -65,7 +63,7 @@ static uint8_t ResolveCluster(
 	uint32_t nDims
 ) {
 	//! Resolve for the centroid
-	if(Cluster->nPoints == 0 || Cluster->TrainWeight == 0.0f) return 0;
+	if(Cluster->TrainWeight == 0.0f) return 0;
 	TCluster_ResolveCentroid(Cluster, nDims);
 
 	//! Recalculate distortion
@@ -118,20 +116,24 @@ static void SplitCluster(
 
 /************************************************/
 
-//! Apply cluster analysis to the specified data
-static inline uint32_t TClusterize_Process(
+//! Create initial clusters by splitting out the most
+//! distorted point into a new cluster and reclustering,
+//! repeating until we have as many clusters as needed.
+//! The output is usable, but not particularly great.
+//! Note: 1/Variance is stored to InvVariancePtr only
+//! if the distortion is not 0.0!
+static uint32_t CreateClusters(
 	TCluster_t *Clusters,
 	const TClusterData_t *Data,
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nPasses,
-	float    SplitRatio,
+	uint32_t nFinalPasses,
 	const float *Weights,
+	float *InvVariancePtr,
 	uint32_t nDims
 ) {
 	uint32_t n, k;
-	if(!nClusters || !nDataPoints || !nPasses || !nDims) return 0;
 
 	//! Do a quick pass for the first cluster
 	uint32_t nCurrentClusters = 1;
@@ -142,40 +144,39 @@ static inline uint32_t TClusterize_Process(
 	for(n=0;n<nDataPoints;n++) {
 		float w = Weights ? Weights[n] : 1.0f;
 		InsertAtListHead(n, &Clusters[0].FirstDataIdx, ClusterListIndices);
-		TrainCluster(&Clusters[0], &Data[n], w, nDims);
+		TrainCluster(&Clusters[0], Data + n*nDims, w, nDims);
 	}
 	ResolveCluster(&Clusters[0], Data, ClusterListIndices, Weights, nDims);
 	InsertToDistortedClusterList(Clusters, 0, &DistClusterHead);
 
+	//! Because we averaged all the data together at a single point,
+	//! the variance of the dataset is equal to TotalDist/TrainWeight.
+	if(Clusters[0].TotalDist != 0.0f) {
+		*InvVariancePtr = Clusters[0].TrainWeight / Clusters[0].TotalDist;
+	}
+
 	//! Begin creating additional clusters
-	float LastSplitDistortion = INFINITY;
 	while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST) {
-		//! Create new clusters from the most distorted data points
+		//! Create new cluster from the most distorted data point.
 		//! Note that we are splitting out the most distorted point
 		//! of the most distorted cluster, NOT the most distorted
 		//! point general. This is an important distinction.
-		float ThisSplitDistortion = LastSplitDistortion * SplitRatio;
+		//! Also note the commented-out code: This allows splitting
+		//! multiple clusters at once, but because of the very low
+		//! number of iterations we do, the results are quite bad.
 		do {
-			//! Stop splitting once we've reached clusters with low distortion.
-			//! The idea is to only split highly distorted clusters, so that
-			//! we avoid early splitting of low-distortion clusters, as this
-			//! would give sub-optimal results.
 			uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
 			uint32_t DstCluster = nCurrentClusters++;
 			SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
-			ThisSplitDistortion -= Clusters[SrcCluster].TotalDist;
-			if(ThisSplitDistortion < 0) break;
-		} while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST);
+		} while(/*nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST*/0);
 
-		//! Begin refinement loop
-		//! Note that we subtract the target cluster variance from the
-		//! calculated distortion. The idea is that if we're within the
-		//! radius of one standard deviation of a cluster, we can use
-		//! it without having to split out a new cluster.
-		uint32_t Pass;
-		float LastPassDist = INFINITY;
+		//! Run at least two k-means passes to improve results a bit
+		uint32_t Pass, nPasses = 2;
+		if(nCurrentClusters == nClusters && nFinalPasses > nPasses) {
+			nPasses = nFinalPasses;
+		}
 		for(Pass=0;Pass<nPasses;Pass++) {
-			//! Assign data points to clusters
+			//! Assign points to clusters
 			for(k=0;k<nCurrentClusters;k++) {
 				Clusters[k].FirstDataIdx = CLUSTER_END_OF_LIST;
 				ClearTraining(&Clusters[k], nDims);
@@ -195,7 +196,7 @@ static inline uint32_t TClusterize_Process(
 				TrainCluster(&Clusters[BestIdx], Data + n*nDims, w, nDims);
 			}
 
-			//! Resolve all clusters
+			//! Resolve clusters
 			float ThisPassDist = 0.0f;
 			DistClusterHead  = CLUSTER_END_OF_LIST;
 			EmptyClusterHead = CLUSTER_END_OF_LIST;
@@ -216,16 +217,139 @@ static inline uint32_t TClusterize_Process(
 				uint32_t DstCluster = PopEmptyClusterList    (Clusters, &EmptyClusterHead);
 				SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
 			}
-
-			//! Early exit on convergence
-			if(ThisPassDist == 0.0f || ThisPassDist >= LastPassDist) break;
-
-			//! Set up for next iteration
-			LastPassDist = ThisPassDist;
 		}
-		LastSplitDistortion = LastPassDist;
 	}
 	return nCurrentClusters;
+}
+
+/************************************************/
+
+//! Refine clusters using equilibrium k-means
+static void RefineClusters(
+	TCluster_t *Clusters,
+	const TClusterData_t *Data,
+	uint32_t nClusters,
+	uint32_t nDataPoints,
+	uint32_t *ClusterListIndices,
+	uint32_t nPasses,
+	const float *Weights,
+	float alpha,
+	uint32_t nDims
+) {
+	uint32_t n, k;
+	uint32_t Pass;
+	float LastPassDist = INFINITY;
+	for(Pass=0;Pass<nPasses;Pass++) {
+		for(k=0;k<nClusters;k++) {
+			Clusters[k].FirstDataIdx = CLUSTER_END_OF_LIST;
+			ClearTraining(&Clusters[k], nDims);
+		}
+		for(n=0;n<nDataPoints;n++) {
+			const TClusterData_t *p = Data + n*nDims;
+			float w_n = Weights ? Weights[n] : 1.0f;
+
+			//! Find minimum distance to improve the LogSumExp-style summation.
+			//! Note: We also store the hard assignment at this point.
+			uint32_t MinIdx  = 0;
+			float    MinDist = INFINITY;
+			for(k=0;k<nClusters;k++) {
+				float d_kn = TCluster_Dist2ToCentroid(&Clusters[k], p, nDims);
+				if(d_kn < MinDist) {
+					MinIdx  = k;
+					MinDist = d_kn;
+				}
+			}
+			InsertAtListHead(n, &Clusters[MinIdx].FirstDataIdx, ClusterListIndices);
+
+			//! Let SoftminDistW = Sum[E^(-a*d_{i,n}), {i,K}]
+			//! Let SoftminDist  = Sum[d_{i,n}*e^(-a*d_{i,n}), {i,K}] / SoftminDistW
+			float WeightSum    = 0.0f;
+			float SoftminDist  = 0.0f;
+			float SoftminDistW = 0.0f;
+			for(k=0;k<nClusters;k++) {
+				float d_kn = TCluster_Dist2ToCentroid(&Clusters[k], p, nDims) - MinDist;
+				float w = w_n * expf(-alpha * d_kn);
+				SoftminDist  += w * d_kn;
+				SoftminDistW += w;
+			}
+			if(SoftminDistW < 1.0e-10f) {
+				//! Numerical collapse - perform hard assign only
+				TrainCluster(&Clusters[MinIdx], p, w_n, nDims);
+				continue;
+			}
+			float InvSoftminDistW = 1.0f / SoftminDistW;
+			SoftminDist *= InvSoftminDistW;
+
+			//! w_{k,n} = e^(-a*d_{k,n}) / SoftminDistW * (1 - a*(d_{k,n} - SoftminDist))
+			for(k=0;k<nClusters;k++) {
+				float d_kn = TCluster_Dist2ToCentroid(&Clusters[k], p, nDims) - MinDist;
+				float w  = w_n * expf(-alpha * d_kn) * InvSoftminDistW;
+				      w *= 1.0f - alpha*(d_kn - SoftminDist);
+				TrainCluster(&Clusters[k], p, w, nDims);
+				WeightSum += w;
+			}
+		}
+
+		//! c_k = Sum[w_{k,n}*x_n, {n,N}] / Sum[w_{k,n}, {n,N}]
+		float ThisPassDist = 0.0f;
+		for(k=0;k<nClusters;k++) {
+			ResolveCluster(&Clusters[k], Data, ClusterListIndices, Weights, nDims);
+			ThisPassDist += Clusters[k].TotalDist;
+		}
+
+		//! Early exit on convergence
+		if(ThisPassDist == 0.0f || ThisPassDist >= LastPassDist) break;
+		LastPassDist = ThisPassDist;
+	}
+}
+
+/************************************************/
+
+//! Apply cluster analysis to the specified data
+static inline uint32_t TClusterize_Process(
+	TCluster_t *Clusters,
+	const TClusterData_t *Data,
+	uint32_t nClusters,
+	uint32_t nDataPoints,
+	uint32_t *ClusterListIndices,
+	uint32_t nPasses,
+	float    Sharpness,
+	const float *Weights,
+	uint32_t nDims
+) {
+	if(!nClusters || !nDataPoints || !nDims) return 0;
+
+	//! Build initial clusters
+	float InvVariance = 0.0f; //! <- Shouldn't be needed, but gcc complains
+	uint32_t nOutputClusters = CreateClusters(
+		Clusters,
+		Data,
+		nClusters,
+		nDataPoints,
+		ClusterListIndices,
+		(Sharpness <= 0.0f) ? nPasses : 0,
+		Weights,
+		&InvVariance,
+		nDims
+	);
+	if(nOutputClusters < nClusters || Sharpness <= 0.0f) {
+		//! Early convergence achieved, or no EKM desired - early exit
+		return nOutputClusters;
+	}
+
+	//! Refine clusters using EKM
+	RefineClusters(
+		Clusters,
+		Data,
+		nClusters,
+		nDataPoints,
+		ClusterListIndices,
+		nPasses,
+		Weights,
+		Sharpness * InvVariance,
+		nDims
+	);
+	return nClusters;
 }
 
 /************************************************/

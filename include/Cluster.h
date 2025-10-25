@@ -12,12 +12,11 @@
 /************************************************/
 
 //! Generic cluster
-//! NOTE: Centroid, Training, and cTraining must be assigned
+//! NOTE: Centroid[] and Training[] vectors must be assigned
 //! by the caller; the functions assume that these pointers
 //! have already been set. Each vector will store N values,
 //! where N is the number of dimensions.
 struct Cluster_t {
-	uint32_t nPoints;        //! Number of points assigned to cluster
 	uint32_t NextCluster;    //! Next cluster in list
 	uint32_t FirstDataIdx;   //! First data point assigned to this cluster
 	uint32_t MaxDistIdx;     //! Index of the most distorted data point
@@ -35,7 +34,6 @@ struct
 __attribute__((aligned(16)))
 #endif
 Cluster_Vec4f_t {
-	uint32_t nPoints;
 	uint32_t NextCluster;
 	uint32_t FirstDataIdx;
 	uint32_t MaxDistIdx;
@@ -54,6 +52,12 @@ Cluster_Vec4f_t {
 //!   eg. `float Data[nDataPoints][nDims]`.
 //!  -ClusterListIndices[] is used to accelerate searches for all data
 //!   points in the specified cluster, and must be nDataPoints in size.
+//!  -Sharpness defines the alpha for equilibrium k-means (EKM):
+//!    * alpha = Sharpness / Variance
+//!   Passing Sharpness <= 0.0 will disable EKM, and only use KM.
+//! Equilibrium k-means implementation derived from:
+//!  "An Equilibrium Approach to Clustering: Surpassing Fuzzy C-Means on Imbalanced Data"
+//!  DOI: 10.1109/TFUZZ.2025.3590508
 uint32_t Clusterize_Process(
 	struct Cluster_t *Clusters,
 	const float *Data,
@@ -62,7 +66,7 @@ uint32_t Clusterize_Process(
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
 	uint32_t nPasses,
-	float    SplitRatio,
+	float    Sharpness,
 	const float *Weights
 );
 uint32_t Clusterize_Vec4f_Process(
@@ -72,7 +76,7 @@ uint32_t Clusterize_Vec4f_Process(
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
 	uint32_t nPasses,
-	float    SplitRatio,
+	float    Sharpness,
 	const float *Weights
 );
 

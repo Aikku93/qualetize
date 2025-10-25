@@ -48,7 +48,7 @@ uint32_t Clusterize_Vec4f_Process(
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
 	uint32_t nPasses,
-	float    SplitRatio,
+	float    Sharpness,
 	const float *Weights
 ) {
 	return TClusterize_Process(
@@ -58,7 +58,7 @@ uint32_t Clusterize_Vec4f_Process(
 		nDataPoints,
 		ClusterListIndices,
 		nPasses,
-		SplitRatio,
+		Sharpness,
 		Weights,
 		1
 	);
