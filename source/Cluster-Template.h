@@ -156,6 +156,7 @@ static uint32_t CreateClusters(
 	}
 
 	//! Begin creating additional clusters
+	float LastPassDist = Clusters[0].TotalDist;
 	while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST) {
 		//! Create new cluster from the most distorted data point.
 		//! Note that we are splitting out the most distorted point
@@ -211,12 +212,25 @@ static uint32_t CreateClusters(
 				}
 			}
 
+			//! Terminate if we exceeded the maximum number of passes.
+			//! This happens if the last iteration had empty clusters
+			//! so that we can assign /something/ to them.
+			if(nPasses >= nFinalPasses) break;
+
 			//! Split the most distorted data points into empty clusters
+			if(DistClusterHead != CLUSTER_END_OF_LIST && EmptyClusterHead != CLUSTER_END_OF_LIST) {
+				//! Do at least one more pass to assign to this cluster
+				nPasses++;
+			}
 			while(DistClusterHead != CLUSTER_END_OF_LIST && EmptyClusterHead != CLUSTER_END_OF_LIST) {
 				uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
 				uint32_t DstCluster = PopEmptyClusterList    (Clusters, &EmptyClusterHead);
 				SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
 			}
+
+			//! Early exit on convergence
+			if(ThisPassDist == 0.0f || ThisPassDist == LastPassDist) break;
+			LastPassDist = ThisPassDist;
 		}
 	}
 	return nCurrentClusters;
@@ -298,7 +312,7 @@ static void RefineClusters(
 		}
 
 		//! Early exit on convergence
-		if(ThisPassDist == 0.0f || ThisPassDist >= LastPassDist) break;
+		if(ThisPassDist == 0.0f || ThisPassDist == LastPassDist) break;
 		LastPassDist = ThisPassDist;
 	}
 }
