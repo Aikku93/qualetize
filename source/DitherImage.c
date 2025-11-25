@@ -213,14 +213,22 @@ void DitherPaletteImage(
 	uint32_t n;
 
 	//! If we requested a diffusion dither, allocate buffer
-	Vec4f_t *DitherBuffer = NULL;
+	void *DitherBuffer = NULL;
 	Vec4f_t *Diffuse_y0   = NULL;
 	Vec4f_t *Diffuse_y1   = NULL;
 	Vec4f_t *Diffuse_y2   = NULL;
 	if(DitherType == DITHER_FLOYDSTEINBERG) {
-		DitherBuffer = (Vec4f_t*)malloc((Width*2+3) * sizeof(Vec4f_t));
+		uint32_t AllocSize = (Width*2+3) * sizeof(Vec4f_t);
+#ifdef __SSE__
+		AllocSize += 16-1; //! <- For forced alignment to 128-bit lanes (16 bytes)
+#endif
+		DitherBuffer = malloc(AllocSize);
 		if(DitherBuffer) {
-			Diffuse_y0 = DitherBuffer + 1;
+			uintptr_t BaseOffset = (uintptr_t)DitherBuffer;
+#ifdef __SSE__
+			BaseOffset = (BaseOffset+15) &~ 15; //! <- Align to 16 bytes
+#endif
+			Diffuse_y0 = (Vec4f_t*)BaseOffset + 1;
 			Diffuse_y1 = Diffuse_y0   + Width+1;
 			for(n=0;n<Width;n++) Diffuse_y1[n] = VEC4F_EMPTY;
 		} else {
@@ -228,9 +236,17 @@ void DitherPaletteImage(
 			DitherType = DITHER_NONE;
 		}
 	} else if(DitherType == DITHER_ATKINSON) {
-		DitherBuffer = (Vec4f_t*)malloc((Width*3+7) * sizeof(Vec4f_t));
+		uint32_t AllocSize = (Width*3+7) * sizeof(Vec4f_t);
+#ifdef __SSE__
+		AllocSize += 16-1;
+#endif
+		DitherBuffer = malloc(AllocSize);
 		if(DitherBuffer) {
-			Diffuse_y0 = DitherBuffer + 1;
+			uintptr_t BaseOffset = (uintptr_t)DitherBuffer;
+#ifdef __SSE__
+			BaseOffset = (BaseOffset+15) &~ 15;
+#endif
+			Diffuse_y0 = (Vec4f_t*)BaseOffset + 1;
 			Diffuse_y1 = Diffuse_y0   + Width+2;
 			Diffuse_y2 = Diffuse_y1   + Width+2;
 			for(n=0;n<Width;n++) Diffuse_y1[n] = VEC4F_EMPTY;
