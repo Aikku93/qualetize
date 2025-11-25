@@ -79,10 +79,12 @@ static uint8_t CalculateTileColourValue(
 	float    Weight  = 0.0f;
 	float    Weight2 = 0.0f;
 	float    WWeight = 0.0f;
+	uint32_t PixelCount = 0;
 	for(dy=-TileH;dy<TileH+TileH;dy++) {
 		if(ty+dy < 0 || (uint32_t)(ty+dy) >= InputHeight) continue;
 		for(dx=-TileW;dx<TileW+TileW;dx++) {
 			if(tx+dx < 0 || (uint32_t)(tx+dx) >= InputWidth) continue;
+			else PixelCount++;
 
 			//! Get pixel and skip if fully transparent with forced transparency
 			Vec4f_t p = PxData[(uint32_t)(ty+dy)*InputWidth + (uint32_t)(tx+dx)];
@@ -129,7 +131,21 @@ static uint8_t CalculateTileColourValue(
 	float lambda = sqrtf((1.0e-10f + Vec4f_Length2(&WMean)) / (1.0e-10f + Vec4f_Length2(&Mean)));
 	Mean = Vec4f_Muli(&Mean, lambda);
 
+	//! Normalize the deviation to extract a sort of "orientation".
+	//! This allows tiles that are subsets of other tiles to be
+	//! merged together. Note that we add a bias prior to this,
+	//! as we don't want 100% overlap; if there is a large enough
+	//! separation, we want the clusters to split.
+	{
+		Dev = Vec4f_Addi(&Dev, 0.1f);
+		Dev = Vec4f_Divi(&Dev, Vec4f_Length(&Dev));
+	}
+
 	//! Fill the tile data
+	//! Note that we weight by the average alpha, even though
+	//! the mean value doesn't use pre-multiplied alpha.
+	//! As an example: If a tile has a single pixel of non-zero
+	//! alpha, it is less important than a tile with all pixels.
 	TileValue[0] = Mean.f32[0];
 	TileValue[1] = Mean.f32[1];
 	TileValue[2] = Mean.f32[2];
@@ -138,7 +154,7 @@ static uint8_t CalculateTileColourValue(
 	TileValue[5] = Dev.f32[1];
 	TileValue[6] = Dev.f32[2];
 	TileValue[7] = Dev.f32[3];
-	*TileWeight = Mean.f32[3] + 1.0e-10f;
+	*TileWeight = Weight / (float)PixelCount + 1.0e-10f;
 	return 1;
 }
 
