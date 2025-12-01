@@ -7,7 +7,6 @@
 #include "Bitmap.h"
 #include "Qualetize.h"
 /************************************************/
-
 //! When not zero, the PSNR for each channel will be displayed
 #define MEASURE_PSNR 1
 
@@ -96,6 +95,59 @@ static int ParseClearColour(const char *s, BGRA8_t *Col) {
 	return 0;
 }
 
+//! Parse a single list of levels (0..255), output normalized (0..1)
+//! Format: a,b,c (stops at stopChar or end of string)
+static const char *ParseLevelList(const char *s, float **OutLevels, uint8_t *OutCount, char stopChar) {
+	uint8_t Count = 0;
+	float *Levels = NULL;
+	while(1) {
+		char *EndPtr;
+		long v = strtol(s, &EndPtr, 10);
+		if(EndPtr == s || v < 0 || v > 255) { free(Levels); return NULL; }
+		float *NewLevels = (float*)realloc(Levels, (Count+1) * sizeof(float));
+		if(!NewLevels) { free(Levels); return NULL; }
+		Levels = NewLevels;
+		Levels[Count++] = (float)v * (1.0f/255.0f);
+		s = EndPtr;
+		if(*s == ',') { s++; continue; }
+		if(*s == stopChar || *s == '\0') {
+			if(*s == stopChar) s++;
+			break;
+		}
+		free(Levels);
+		return NULL;
+	}
+	*OutLevels = Levels;
+	*OutCount  = Count;
+	return s;
+}
+
+//! Parse four comma-separated lists for RGBA (does not write to Plan until success)
+static int ParseCustomLevels(const char *s, float *OutLevels[4], uint8_t OutCount[4]) {
+	int ch;
+	for(ch=0;ch<4;ch++) {
+		float *Levels = NULL;
+		uint8_t Count = 0;
+		const char *Next = ParseLevelList(s, &Levels, &Count, (ch == 3) ? '\0' : '/');
+		if(!Next) {
+			int i; for(i=0;i<ch;i++) free(OutLevels[i]);
+			free(Levels);
+			return -1;
+		}
+		OutLevels[ch] = Levels;
+		OutCount[ch]  = Count;
+		s = Next;
+		if(ch != 3) {
+			if(*s != '/') {
+				int i; for(i=0;i<=ch;i++) free(OutLevels[i]);
+				return -1;
+			}
+			s++;
+		}
+	}
+	return 0;
+}
+
 int main(int argc, const char *argv[]) {
 	//! Check arguments
 	if(argc < 3) {
@@ -111,6 +163,7 @@ int main(int argc, const char *argv[]) {
 			"                         Note that this value times the number of palettes must\n"
 			"                         be less than or equal to 256.\n"
 			"  -rgba:5551           - Set RGBA bit depth\n"
+			"  -customlevels:r.../g.../b.../a... - Set custom levels for R,G,B,A (values 0-255)\n"
 			"                         RGBA = 8888 is standard for BMP (ie. 24-bit colour,\n"
 			"                         plus 8-bit alpha), but for the targets this tool is\n"
 			"                         intended for, RGBA = 5551 is the norm.\n"
@@ -186,6 +239,9 @@ int main(int argc, const char *argv[]) {
 	Plan.nColourClusterPasses = 0;
 	Plan.ColourDepth          = (Vec4f_t){{31,31,31,1}};
 	Plan.TransparentColour    = (BGRA8_t){0,0,0,0};
+	Plan.CustomLevels[0] = Plan.CustomLevels[1] = Plan.CustomLevels[2] = Plan.CustomLevels[3] = NULL;
+	Plan.CustomLevelCount[0] = Plan.CustomLevelCount[1] = Plan.CustomLevelCount[2] = Plan.CustomLevelCount[3] = 0;
+	float *CustomLevelsAlloc[4] = {NULL,NULL,NULL,NULL};
 	{
 		int argi;
 		for(argi=3;argi<argc;argi++) {
@@ -222,6 +278,23 @@ int main(int argc, const char *argv[]) {
 				int c = ParseColourspace(ArgStr);
 				if(c != -1) Plan.Colourspace = (uint8_t)c;
 				else printf("WARNING: Unrecognized colourspace: %s\n", ArgStr);
+				ArgOk = 1;
+			}
+			ARGMATCH(argv[argi], "-customlevels:") {
+				float *ParsedLevels[4] = {NULL,NULL,NULL,NULL};
+				uint8_t Counts[4] = {0,0,0,0};
+				if(ParseCustomLevels(ArgStr, ParsedLevels, Counts) == -1) {
+					printf("WARNING: Failed to parse custom levels: %s\n", ArgStr);
+					//! Leave any prior preset intact
+				} else {
+					int ch;
+					for(ch=0;ch<4;ch++) {
+						free(CustomLevelsAlloc[ch]);
+						CustomLevelsAlloc[ch] = ParsedLevels[ch];
+						Plan.CustomLevels[ch] = CustomLevelsAlloc[ch];
+						Plan.CustomLevelCount[ch] = Counts[ch];
+					}
+				}
 				ArgOk = 1;
 			}
 			ARGMATCH(argv[argi], "-dither:") {

@@ -51,6 +51,85 @@ static BGRA8_t Vec4fRGBA_To_BGRA8(const Vec4f_t *x) {
 
 /************************************************/
 
+enum QuantizeMode_t {
+	QUANTIZE_NEAREST,
+	QUANTIZE_FLOOR,
+	QUANTIZE_CEIL
+};
+
+static float QuantizeChannel_Custom(float v, const float *Levels, uint8_t n, enum QuantizeMode_t Mode) {
+	float y = Levels[0];
+	if(Mode == QUANTIZE_NEAREST) {
+		float BestDist = fabsf(v - y);
+		uint32_t i;
+		for(i=1;i<n;i++) {
+			float Dist = fabsf(v - Levels[i]);
+			if(Dist < BestDist) {
+				BestDist = Dist;
+				y = Levels[i];
+			}
+		}
+		return y;
+	} else if(Mode == QUANTIZE_FLOOR) {
+		uint8_t Found = 0;
+		uint32_t i;
+		for(i=0;i<n;i++) {
+			float Lv = Levels[i];
+			if(Lv <= v && (!Found || Lv > y)) {
+				y = Lv;
+				Found = 1;
+			}
+		}
+		if(Found) return y;
+
+		//! All entries above v; pick the smallest level to keep behaviour order-independent
+		for(i=1;i<n;i++) {
+			if(Levels[i] < y) y = Levels[i];
+		}
+		return y;
+	} else { //! QUANTIZE_CEIL
+		uint8_t Found = 0;
+		uint32_t i;
+		for(i=0;i<n;i++) {
+			float Lv = Levels[i];
+			if(Lv >= v && (!Found || Lv < y)) {
+				y = Lv;
+				Found = 1;
+			}
+		}
+		if(!Found) {
+			//! All entries below v; pick max
+			y = Levels[0];
+			for(i=1;i<n;i++) if(Levels[i] > y) y = Levels[i];
+		}
+		return y;
+	}
+}
+
+static float QuantizeChannel_WithPlan(float v, const struct QualetizePlan_t *Plan, uint32_t Channel, enum QuantizeMode_t Mode) {
+	const float *Levels = Plan->CustomLevels[Channel];
+	uint8_t n = Plan->CustomLevelCount[Channel];
+	if(Levels && n != 0) {
+		return QuantizeChannel_Custom(v, Levels, n, Mode);
+	} else {
+		float Depth = Plan->ColourDepth.f32[Channel];
+		if(Mode == QUANTIZE_NEAREST) return roundf(v * Depth) / Depth;
+		if(Mode == QUANTIZE_FLOOR)   return  floorf(v * Depth) / Depth;
+		                             return   ceilf(v * Depth) / Depth;
+	}
+}
+
+static Vec4f_t Quantize_WithPlan(const Vec4f_t *x, const struct QualetizePlan_t *Plan, enum QuantizeMode_t Mode) {
+	Vec4f_t y;
+	y.f32[0] = QuantizeChannel_WithPlan(x->f32[0], Plan, 0, Mode);
+	y.f32[1] = QuantizeChannel_WithPlan(x->f32[1], Plan, 1, Mode);
+	y.f32[2] = QuantizeChannel_WithPlan(x->f32[2], Plan, 2, Mode);
+	y.f32[3] = QuantizeChannel_WithPlan(x->f32[3], Plan, 3, Mode);
+	return y;
+}
+
+/************************************************/
+
 //! Calculate the colour value of a tile
 static uint8_t CalculateTileColourValue(
 	float *TileValue,
@@ -652,16 +731,16 @@ uint8_t Qualetize(
 			}
 			x = Vec4f_Max(&x, &vZeros);
 			x = Vec4f_Min(&x, &vOnes);
-			Vec4f_t xq = Vec4f_Quantize(&x, &Plan->ColourDepth);
+			Vec4f_t xq = Quantize_WithPlan(&x, Plan, QUANTIZE_NEAREST);
 			for(k=0;k<n;k++) {
 				//! If we already quantized to this exact colour,
 				//! split to floor/ceiling modes to get a better
 				//! chance at error dithering
 				Vec4f_t xk = BGRA8_To_Vec4fRGBA(&Dst[k]);
 				if(Vec4f_Dist2(&xq, &xk) == 0.0f) {
-					xq = Vec4f_QuantizeFloor(&x, &Plan->ColourDepth);
+					xq = Quantize_WithPlan(&x, Plan, QUANTIZE_FLOOR);
 					Dst[k] = Vec4fRGBA_To_BGRA8(&xq);
-					xq = Vec4f_QuantizeCeil(&x, &Plan->ColourDepth);
+					xq = Quantize_WithPlan(&x, Plan, QUANTIZE_CEIL);
 				}
 			}
 			Dst[n] = Vec4fRGBA_To_BGRA8(&xq);
