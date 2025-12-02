@@ -7,7 +7,6 @@
 #include "Bitmap.h"
 #include "Qualetize.h"
 /************************************************/
-
 //! When not zero, the PSNR for each channel will be displayed
 #define MEASURE_PSNR 1
 
@@ -96,6 +95,80 @@ static int ParseClearColour(const char *s, BGRA8_t *Col) {
 	return 0;
 }
 
+//! Parse a single list of levels (0..255), output normalized (0..1)
+//! Format: a,b,c (stops at stopChar or end of string). Empty list is allowed.
+static const char *ParseLevelList(const char *s, float **OutLevels, uint8_t *OutCount, char stopChar) {
+	*OutLevels = NULL;
+	*OutCount  = 0;
+
+	if(*s == stopChar || *s == '\0') return s;
+
+	float *list = NULL;
+	uint8_t n   = 0;
+	for(;;) {
+		char *end;
+		long v = strtol(s, &end, 10);
+		if(end == s || v < 0 || v > 255) { free(list); return NULL; }
+		float *tmp = (float*)realloc(list, (n+1) * sizeof(float));
+		if(!tmp) { free(list); return NULL; }
+		list = tmp;
+		list[n++] = (float)v * (1.0f/255.0f);
+
+		s = end;
+		if(*s == ',') { s++; continue; }
+		if(*s == stopChar || *s == '\0') break;
+		free(list);
+		return NULL;
+	}
+
+	*OutLevels = list;
+	*OutCount  = n;
+	return s;
+}
+
+//! Parse four lists for RGBA (does not write to Plan until success)
+//! Empty list reuses the previous channel's list (e.g. r///a copies R into G/B).
+static int ParseCustomLevels(const char *s, float *OutLevels[4], uint8_t OutCount[4], uint8_t OwnsLevels[4]) {
+	int ch;
+	for(ch=0;ch<4;ch++) {
+		OutLevels[ch]  = NULL;
+		OutCount[ch]   = 0;
+		OwnsLevels[ch] = 0;
+	}
+
+	for(ch=0;ch<4;ch++) {
+		char stop = (ch == 3) ? '\0' : '/';
+		float *Levels = NULL;
+		uint8_t Count = 0;
+		const char *Next = ParseLevelList(s, &Levels, &Count, stop);
+		if(!Next) { free(Levels); goto fail; }
+
+		if(Count == 0 && ch > 0) {
+			OutLevels[ch]  = OutLevels[ch-1];
+			OutCount[ch]   = OutCount[ch-1];
+			OwnsLevels[ch] = 0;
+			free(Levels);
+		} else {
+			OutLevels[ch]  = Levels;
+			OutCount[ch]   = Count;
+			OwnsLevels[ch] = 1;
+		}
+
+		s = Next;
+		if(ch != 3) {
+			if(*s != '/') goto fail;
+			s++;
+		}
+	}
+	return 0;
+
+fail:
+	for(ch=0;ch<4;ch++) {
+		if(OwnsLevels[ch] && OutLevels[ch]) free(OutLevels[ch]);
+	}
+	return -1;
+}
+
 int main(int argc, const char *argv[]) {
 	//! Check arguments
 	if(argc < 3) {
@@ -114,6 +187,9 @@ int main(int argc, const char *argv[]) {
 			"                         RGBA = 8888 is standard for BMP (ie. 24-bit colour,\n"
 			"                         plus 8-bit alpha), but for the targets this tool is\n"
 			"                         intended for, RGBA = 5551 is the norm.\n"
+			"  -customlevels:r.../g.../b.../a... - Set custom levels for R,G,B,A (values 0-255)\n"
+			"                         Lists should be ascending; empty sections reuse the\n"
+			"                         previous channel (e.g. r///a).\n"
 			"  -premulalpha:n       - Alpha is pre-multiplied (y/n)\n"
 			"                         While most formats generally pre-multiply the colours\n"
 			"                         by the alpha value, 32-bit BMP files generally do not.\n"
@@ -186,6 +262,9 @@ int main(int argc, const char *argv[]) {
 	Plan.nColourClusterPasses = 0;
 	Plan.ColourDepth          = (Vec4f_t){{31,31,31,1}};
 	Plan.TransparentColour    = (BGRA8_t){0,0,0,0};
+	Plan.CustomLevels[0] = Plan.CustomLevels[1] = Plan.CustomLevels[2] = Plan.CustomLevels[3] = NULL;
+	Plan.CustomLevelCount[0] = Plan.CustomLevelCount[1] = Plan.CustomLevelCount[2] = Plan.CustomLevelCount[3] = 0;
+	float *CustomLevelsAlloc[4] = {NULL,NULL,NULL,NULL};
 	{
 		int argi;
 		for(argi=3;argi<argc;argi++) {
@@ -222,6 +301,34 @@ int main(int argc, const char *argv[]) {
 				int c = ParseColourspace(ArgStr);
 				if(c != -1) Plan.Colourspace = (uint8_t)c;
 				else printf("WARNING: Unrecognized colourspace: %s\n", ArgStr);
+				ArgOk = 1;
+			}
+			ARGMATCH(argv[argi], "-customlevels:") {
+				float *ParsedLevels[4] = {NULL,NULL,NULL,NULL};
+				uint8_t Counts[4] = {0,0,0,0};
+				uint8_t Owns[4]   = {0,0,0,0};
+				if(ParseCustomLevels(ArgStr, ParsedLevels, Counts, Owns) == -1) {
+					printf("WARNING: Failed to parse custom levels: %s\n", ArgStr);
+					//! Leave any prior preset intact
+				} else {
+					int ch;
+					//! Free prior unique allocations
+					for(ch=0;ch<4;ch++) {
+						if(CustomLevelsAlloc[ch]) {
+							int seen = 0, k;
+							for(k=0;k<ch;k++) {
+								if(CustomLevelsAlloc[k] == CustomLevelsAlloc[ch]) { seen = 1; break; }
+							}
+							if(!seen) free(CustomLevelsAlloc[ch]);
+						}
+						CustomLevelsAlloc[ch] = NULL;
+					}
+					for(ch=0;ch<4;ch++) {
+						CustomLevelsAlloc[ch]     = Owns[ch] ? ParsedLevels[ch] : NULL;
+						Plan.CustomLevels[ch]     = ParsedLevels[ch];
+						Plan.CustomLevelCount[ch] = Counts[ch];
+					}
+				}
 				ArgOk = 1;
 			}
 			ARGMATCH(argv[argi], "-dither:") {
