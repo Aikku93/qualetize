@@ -96,56 +96,77 @@ static int ParseClearColour(const char *s, BGRA8_t *Col) {
 }
 
 //! Parse a single list of levels (0..255), output normalized (0..1)
-//! Format: a,b,c (stops at stopChar or end of string)
+//! Format: a,b,c (stops at stopChar or end of string). Empty list is allowed.
 static const char *ParseLevelList(const char *s, float **OutLevels, uint8_t *OutCount, char stopChar) {
-	uint8_t Count = 0;
-	float *Levels = NULL;
-	while(1) {
-		char *EndPtr;
-		long v = strtol(s, &EndPtr, 10);
-		if(EndPtr == s || v < 0 || v > 255) { free(Levels); return NULL; }
-		float *NewLevels = (float*)realloc(Levels, (Count+1) * sizeof(float));
-		if(!NewLevels) { free(Levels); return NULL; }
-		Levels = NewLevels;
-		Levels[Count++] = (float)v * (1.0f/255.0f);
-		s = EndPtr;
+	*OutLevels = NULL;
+	*OutCount  = 0;
+
+	if(*s == stopChar || *s == '\0') return s;
+
+	float *list = NULL;
+	uint8_t n   = 0;
+	for(;;) {
+		char *end;
+		long v = strtol(s, &end, 10);
+		if(end == s || v < 0 || v > 255) { free(list); return NULL; }
+		float *tmp = (float*)realloc(list, (n+1) * sizeof(float));
+		if(!tmp) { free(list); return NULL; }
+		list = tmp;
+		list[n++] = (float)v * (1.0f/255.0f);
+
+		s = end;
 		if(*s == ',') { s++; continue; }
-		if(*s == stopChar || *s == '\0') {
-			if(*s == stopChar) s++;
-			break;
-		}
-		free(Levels);
+		if(*s == stopChar || *s == '\0') break;
+		free(list);
 		return NULL;
 	}
-	*OutLevels = Levels;
-	*OutCount  = Count;
+
+	*OutLevels = list;
+	*OutCount  = n;
 	return s;
 }
 
-//! Parse four comma-separated lists for RGBA (does not write to Plan until success)
-static int ParseCustomLevels(const char *s, float *OutLevels[4], uint8_t OutCount[4]) {
+//! Parse four lists for RGBA (does not write to Plan until success)
+//! Empty list reuses the previous channel's list (e.g. r///a copies R into G/B).
+static int ParseCustomLevels(const char *s, float *OutLevels[4], uint8_t OutCount[4], uint8_t OwnsLevels[4]) {
 	int ch;
 	for(ch=0;ch<4;ch++) {
+		OutLevels[ch]  = NULL;
+		OutCount[ch]   = 0;
+		OwnsLevels[ch] = 0;
+	}
+
+	for(ch=0;ch<4;ch++) {
+		char stop = (ch == 3) ? '\0' : '/';
 		float *Levels = NULL;
 		uint8_t Count = 0;
-		const char *Next = ParseLevelList(s, &Levels, &Count, (ch == 3) ? '\0' : '/');
-		if(!Next) {
-			int i; for(i=0;i<ch;i++) free(OutLevels[i]);
+		const char *Next = ParseLevelList(s, &Levels, &Count, stop);
+		if(!Next) { free(Levels); goto fail; }
+
+		if(Count == 0 && ch > 0) {
+			OutLevels[ch]  = OutLevels[ch-1];
+			OutCount[ch]   = OutCount[ch-1];
+			OwnsLevels[ch] = 0;
 			free(Levels);
-			return -1;
+		} else {
+			OutLevels[ch]  = Levels;
+			OutCount[ch]   = Count;
+			OwnsLevels[ch] = 1;
 		}
-		OutLevels[ch] = Levels;
-		OutCount[ch]  = Count;
+
 		s = Next;
 		if(ch != 3) {
-			if(*s != '/') {
-				int i; for(i=0;i<=ch;i++) free(OutLevels[i]);
-				return -1;
-			}
+			if(*s != '/') goto fail;
 			s++;
 		}
 	}
 	return 0;
+
+fail:
+	for(ch=0;ch<4;ch++) {
+		if(OwnsLevels[ch] && OutLevels[ch]) free(OutLevels[ch]);
+	}
+	return -1;
 }
 
 int main(int argc, const char *argv[]) {
@@ -284,15 +305,26 @@ int main(int argc, const char *argv[]) {
 			ARGMATCH(argv[argi], "-customlevels:") {
 				float *ParsedLevels[4] = {NULL,NULL,NULL,NULL};
 				uint8_t Counts[4] = {0,0,0,0};
-				if(ParseCustomLevels(ArgStr, ParsedLevels, Counts) == -1) {
+				uint8_t Owns[4]   = {0,0,0,0};
+				if(ParseCustomLevels(ArgStr, ParsedLevels, Counts, Owns) == -1) {
 					printf("WARNING: Failed to parse custom levels: %s\n", ArgStr);
 					//! Leave any prior preset intact
 				} else {
 					int ch;
+					//! Free prior unique allocations
 					for(ch=0;ch<4;ch++) {
-						free(CustomLevelsAlloc[ch]);
-						CustomLevelsAlloc[ch] = ParsedLevels[ch];
-						Plan.CustomLevels[ch] = CustomLevelsAlloc[ch];
+						if(CustomLevelsAlloc[ch]) {
+							int seen = 0, k;
+							for(k=0;k<ch;k++) {
+								if(CustomLevelsAlloc[k] == CustomLevelsAlloc[ch]) { seen = 1; break; }
+							}
+							if(!seen) free(CustomLevelsAlloc[ch]);
+						}
+						CustomLevelsAlloc[ch] = NULL;
+					}
+					for(ch=0;ch<4;ch++) {
+						CustomLevelsAlloc[ch]     = Owns[ch] ? ParsedLevels[ch] : NULL;
+						Plan.CustomLevels[ch]     = ParsedLevels[ch];
 						Plan.CustomLevelCount[ch] = Counts[ch];
 					}
 				}
