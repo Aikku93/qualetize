@@ -58,52 +58,28 @@ enum QuantizeMode_t {
 };
 
 static float QuantizeChannel_Custom(float v, const float *Levels, uint8_t n, enum QuantizeMode_t Mode) {
-	float y = Levels[0];
-	if(Mode == QUANTIZE_NEAREST) {
-		float BestDist = fabsf(v - y);
-		uint32_t i;
-		for(i=1;i<n;i++) {
-			float Dist = fabsf(v - Levels[i]);
-			if(Dist < BestDist) {
-				BestDist = Dist;
-				y = Levels[i];
-			}
+	//! Ascending Levels[] assumed
+	int floorIdx = -1;
+	int ceilIdx  = -1;
+	uint32_t i;
+	for(i=0;i<n;i++) {
+		float Lv = Levels[i];
+		if(Lv <= v) {
+			floorIdx = (int)i;
+		} else { //! first Lv > v -> ceil found, can stop
+			ceilIdx = (int)i;
+			break;
 		}
-		return y;
-	} else if(Mode == QUANTIZE_FLOOR) {
-		uint8_t Found = 0;
-		uint32_t i;
-		for(i=0;i<n;i++) {
-			float Lv = Levels[i];
-			if(Lv <= v && (!Found || Lv > y)) {
-				y = Lv;
-				Found = 1;
-			}
-		}
-		if(Found) return y;
-
-		//! All entries above v; pick the smallest level to keep behaviour order-independent
-		for(i=1;i<n;i++) {
-			if(Levels[i] < y) y = Levels[i];
-		}
-		return y;
-	} else { //! QUANTIZE_CEIL
-		uint8_t Found = 0;
-		uint32_t i;
-		for(i=0;i<n;i++) {
-			float Lv = Levels[i];
-			if(Lv >= v && (!Found || Lv < y)) {
-				y = Lv;
-				Found = 1;
-			}
-		}
-		if(!Found) {
-			//! All entries below v; pick max
-			y = Levels[0];
-			for(i=1;i<n;i++) if(Levels[i] > y) y = Levels[i];
-		}
-		return y;
 	}
+
+	if(Mode == QUANTIZE_FLOOR) return (floorIdx >= 0) ? Levels[floorIdx] : Levels[0];
+	if(Mode == QUANTIZE_CEIL)  return (ceilIdx  >= 0) ? Levels[ceilIdx]  : Levels[n-1];
+
+	//! QUANTIZE_NEAREST
+	float floorDist = floorIdx >= 0 ? fabsf(v - Levels[floorIdx]) : INFINITY;
+	float ceilDist  = ceilIdx  >= 0 ? fabsf(v - Levels[ceilIdx])  : INFINITY;
+	if(floorDist <= ceilDist && floorIdx >= 0) return Levels[floorIdx];
+	return Levels[ceilIdx];
 }
 
 static float QuantizeChannel_WithPlan(float v, const struct QualetizePlan_t *Plan, uint32_t Channel, enum QuantizeMode_t Mode) {
