@@ -35,3 +35,4 @@ All conversions performed using default settings plus `-ditherin:floyd` and `-np
 * **Ruben Nunez** - *Initial work* - [Aikku93](https://github.com/Aikku93)
 * **Marco Köpcke** - *Modifications and motivation for DLL interface* - [Parakoopa](https://github.com/Parakoopa)
 * **zvezdochiot** - *Code and git cleanup* - [zvezdochiot](https://github.com/zvezdochiot)
+* **ulalume** - *Tweaks, enhancements, [and GUI wrapper](https://github.com/ulalume/qualetize_gui)* - [ulalume](https://github.com/ulalume)
