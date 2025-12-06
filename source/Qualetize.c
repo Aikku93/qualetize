@@ -91,7 +91,7 @@ static float QuantizeChannel_WithPlan(float v, const struct QualetizePlan_t *Pla
 		float Depth = Plan->ColourDepth.f32[Channel];
 		if(Mode == QUANTIZE_NEAREST) return roundf(v * Depth) / Depth;
 		if(Mode == QUANTIZE_FLOOR)   return floorf(v * Depth) / Depth;
-		                             return ceilf(v * Depth) / Depth;
+		else                         return ceilf(v * Depth) / Depth;
 	}
 }
 
