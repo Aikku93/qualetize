@@ -139,7 +139,7 @@ static uint32_t CreateClusters(
 	uint32_t nCurrentClusters = 1;
 	uint32_t DistClusterHead  = CLUSTER_END_OF_LIST;
 	uint32_t EmptyClusterHead = CLUSTER_END_OF_LIST;
-	Clusters[0].FirstDataIdx  = CLUSTER_END_OF_LIST;
+	for(k=0;k<nClusters;k++) Clusters[k].FirstDataIdx = CLUSTER_END_OF_LIST;
 	ClearTraining(&Clusters[0], nDims);
 	for(n=0;n<nDataPoints;n++) {
 		float w = Weights ? Weights[n] : 1.0f;

@@ -465,7 +465,7 @@ uint8_t Qualetize(
 	}
 
 	//! Cluster tiles together by palette
-	if(Plan->nTilePalettes > 1) {
+	if(Plan->nTilePalettes > 1 && nNonBlankTiles) {
 		//! Set up the cluster pointers
 		uint32_t k;
 		float *NextPtr = (float*)(TileClusters + Plan->nTilePalettes);
@@ -515,11 +515,15 @@ uint8_t Qualetize(
 				*--TileIndexDst = 0xFF;
 			} while(BlankTileIndices < BlankTileIndicesEnd);
 		}
-	} else {
+	} else if(nNonBlankTiles) {
 		//! If we only requested one palette, then all tiles belong
 		//! to the same palette index
 		uint32_t n;
 		for(n=0;n<nTilesTotal;n++) TilePaletteIndices[n] = 0;
+	} else {
+		//! All tiles are blank
+		uint32_t n;
+		for(n=0;n<nTilesTotal;n++) TilePaletteIndices[n] = 0xFF;
 	}
 
 	//! And now cluster the palette colours
