@@ -17,12 +17,13 @@
 #define TILE_CLUSTER_DIMENSIONS 8
 
 //! Default number of clustering passes
-//! When using these values, these refer to the number of passes over
-//! all the clusters, and the actual number of passes per cluster will
-//! be equal to DEFAULT_PASSES/nClusters; this keeps the running time
-//! more manageable.
-#define DEFAULT_TILECLUSTER_PASSES   1024
-#define DEFAULT_COLOURCLUSTER_PASSES 1024
+#define DEFAULT_TILE_PASSES_PER_PALETTES  256
+#define DEFAULT_COLOUR_PASSES_PER_COLOURS 64
+
+//! EKM "Sharpness" parameters
+//! Setting these to 0 will use baseline k-means instead
+#define TILE_CLUSTER_EKM_ALPHA   0.0f
+#define COLOUR_CLUSTER_EKM_ALPHA 4.0f
 
 /************************************************/
 
@@ -167,17 +168,17 @@ static uint8_t CalculateTileColourValue(
 
 	//! Normalize means, calculate standard deviation
 	//! Note that this removes the pre-multiplied alpha!
-	Vec4f_t Dev;
+	Vec4f_t Var, Dev;
 	if(Weight) {
 		static const Vec4f_t Zero = VEC4F_EMPTY;
 		Mean  = Vec4f_Divi(&Mean,  Weight);
 		Mean2 = Vec4f_Divi(&Mean2, Weight2);
 		WMean = Vec4f_Divi(&WMean, WWeight);
-		Dev   = Vec4f_Mul(&Mean,  &Mean);
-		Dev   = Vec4f_Sub(&Mean2, &Dev);
-		Dev   = Vec4f_Max(&Dev,   &Zero); //! <- Protect against round-off error before square root
-		Dev   = Vec4f_Sqrt(&Dev);
-	} else Dev = VEC4F_EMPTY;
+		Var   = Vec4f_Mul(&Mean,  &Mean);
+		Var   = Vec4f_Sub(&Mean2, &Var);
+		Var   = Vec4f_Max(&Var,   &Zero); //! <- Protect against round-off error before square root
+		Dev   = Vec4f_Sqrt(&Var);
+	} else Var = Dev = VEC4F_EMPTY;
 
 	//! Apply a shrinkage estimator to the mean. This preserves
 	//! the "orientation" of the colour vector, while smoothing
@@ -192,18 +193,33 @@ static uint8_t CalculateTileColourValue(
 	//! as we don't want 100% overlap; if there is a large enough
 	//! separation, we want the clusters to split.
 	{
-		Dev = Vec4f_Addi(&Dev, 0.1f);
+		static const Vec4f_t Bias = (Vec4f_t){{0.1f,0.5f,0.5f,0.0f}};
+		Dev = Vec4f_Add(&Dev, &Bias);
 		Dev = Vec4f_Divi(&Dev, Vec4f_Length(&Dev));
 	}
+
+	//! Give higher weight to tiles with high "pairwise covariance",
+	//! meaning the sum of the off-diagonals of the covariance matrix
+	//! In other words: the more "colourful" a tile is in every way,
+	//! the higher the weight it gets to preserve the detail.
+	int i, j;
+	float IntraCov = 0.0f;
+	for(i=0;i<4;i++) for(j=0;j<i;j++) {
+		IntraCov += Var.f32[i] * Var.f32[j];
+	}
+	Weight *= 1.0f + 0.5f*sqrtf(IntraCov);
 
 	//! Fill the tile data
 	//! Note that we weight by the average alpha, even though
 	//! the mean value doesn't use pre-multiplied alpha.
 	//! As an example: If a tile has a single pixel of non-zero
 	//! alpha, it is less important than a tile with all pixels.
+	//! Also note that because we introduced a large bias into
+	//! the chroma deviation, we compensate by increasing the
+	//! weight of the chroma mean.
 	TileValue[0] = Mean.f32[0];
-	TileValue[1] = Mean.f32[1];
-	TileValue[2] = Mean.f32[2];
+	TileValue[1] = Mean.f32[1] * 1.5f;
+	TileValue[2] = Mean.f32[2] * 1.5f;
 	TileValue[3] = Mean.f32[3];
 	TileValue[4] = Dev.f32[0];
 	TileValue[5] = Dev.f32[1];
@@ -319,9 +335,10 @@ uint8_t Qualetize(
 		uint32_t AllocSize = 0;
 		uint32_t TotalPalCols = Plan->nPaletteColours * Plan->nTilePalettes;
 		uint32_t ClustersDataSize; {
-			//! NOTE: We have to manually allocate space for Centroid[], Training[]
+			//! NOTE: We have to manually allocate space for Centroid[], Training[], Axis[]
 			uint32_t ColourClusterSize = Plan->nPaletteColours * sizeof(struct Cluster_Vec4f_t);
 			uint32_t TilesClusterSize  = Plan->nTilePalettes   * sizeof(struct Cluster_t);
+			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
 			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
 			         TilesClusterSize += Plan->nTilePalettes   * sizeof(float)*TILE_CLUSTER_DIMENSIONS;
 			if(ColourClusterSize > TilesClusterSize) {
@@ -472,11 +489,12 @@ uint8_t Qualetize(
 		for(k=0;k<Plan->nTilePalettes;k++) {
 			TileClusters[k].Centroid = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
 			TileClusters[k].Training = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
+			TileClusters[k].Axis     = NextPtr, NextPtr += TILE_CLUSTER_DIMENSIONS;
 		}
 
 		//! Perform actual clustering now
 		uint32_t TileClusterPasses = Plan->nTileClusterPasses;
-		if(!TileClusterPasses) TileClusterPasses = DEFAULT_TILECLUSTER_PASSES / Plan->nTilePalettes;
+		if(!TileClusterPasses) TileClusterPasses = DEFAULT_TILE_PASSES_PER_PALETTES / Plan->nTilePalettes;
 		Clusterize_Process(
 			TileClusters,
 			TileColourValues,
@@ -485,7 +503,7 @@ uint8_t Qualetize(
 			nNonBlankTiles,
 			ClusterListIndices,
 			TileClusterPasses,
-			10.0f,
+			TILE_CLUSTER_EKM_ALPHA,
 			TileClusterWeights
 		);
 		Clusterize_GetClusterIndices_u8(
@@ -531,7 +549,7 @@ uint8_t Qualetize(
 	uint32_t nOutputColours = Plan->nPaletteColours;
 	if(Plan->FirstColourIsTransparent) nOutputColours--;
 	uint32_t ColourClusterPasses = Plan->nColourClusterPasses;
-	if(!ColourClusterPasses) ColourClusterPasses = DEFAULT_COLOURCLUSTER_PASSES / nOutputColours;
+	if(!ColourClusterPasses) ColourClusterPasses = DEFAULT_COLOUR_PASSES_PER_COLOURS / nOutputColours;
 	for(PalIdx=0;PalIdx<Plan->nTilePalettes;PalIdx++) {
 		//! Read pixels of all tiles falling into this palette
 		uint32_t n;
@@ -567,8 +585,6 @@ uint8_t Qualetize(
 		Vec4f_t UnusedColour = (Vec4f_t){{1.0f,0.0f,1.0f,1.0f}};
 		UnusedColour = ConvertToColourspace(&UnusedColour, Plan->Colourspace);
 		if(DataCnt != 0) {
-			//! Setting Sharpness to 20.0 can sometimes result in
-			//! 0.2-0.3dB PSNR improvement, but is MUCH MUCH slower!
 			uint32_t nOutputClusters = Clusterize_Vec4f_Process(
 				ColourClusters,
 				ColourClusterBuffer,
@@ -576,7 +592,7 @@ uint8_t Qualetize(
 				DataCnt,
 				ClusterListIndices,
 				ColourClusterPasses,
-				0.0f, //! <- No EKM, only standard k-means
+				COLOUR_CLUSTER_EKM_ALPHA,
 				NULL
 			);
 			for(n=nOutputClusters;n<nOutputColours;n++) {

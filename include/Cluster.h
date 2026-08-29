@@ -6,13 +6,16 @@
 #include "Vec4f.h"
 /************************************************/
 
+//! Number of iterations to use for principal axis calculation
+#define EIGEN_ITERS 8
+
 //! "End of list" signal in linked lists
 #define CLUSTER_END_OF_LIST (~0u)
 
 /************************************************/
 
 //! Generic cluster
-//! NOTE: Centroid[] and Training[] vectors must be assigned
+//! NOTE: Centroid[], Training[], Axis[] must be assigned
 //! by the caller; the functions assume that these pointers
 //! have already been set. Each vector will store N values,
 //! where N is the number of dimensions.
@@ -24,6 +27,7 @@ struct Cluster_t {
 	float    TotalDist;      //! Sum of distortion of all data points in this cluster
 	float   *Centroid;       //! Centroid of cluster
 	float   *Training;       //! Training summation
+	float   *Axis;           //! Principal axis
 };
 
 //! Specialized Vec4f_t cluster
@@ -41,6 +45,7 @@ Cluster_Vec4f_t {
 	float    TotalDist;
 	Vec4f_t  Centroid;
 	Vec4f_t  Training;
+	Vec4f_t  Axis;
 };
 
 /************************************************/

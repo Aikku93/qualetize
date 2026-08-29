@@ -1,5 +1,6 @@
 /************************************************/
 #include <math.h>
+#include <stdlib.h>
 /************************************************/
 #include "Cluster.h"
 /************************************************/
@@ -43,6 +44,61 @@ static void TCluster_SetCentroidToData(TCluster_t *x, const TClusterData_t *Data
 	for(n=0;n<nDims;n++) {
 		x->Centroid[n] = Data[n];
 	}
+}
+
+static void TCluster_EigenAxis(TCluster_t *x, const TClusterData_t *Data, const uint32_t *ClusterListIndices, const float *Weights, uint32_t nDims) {
+#define FLATTEN_LTRI(i,j) ((i)*((i)+1)/2+(j))
+	uint32_t i, j, k, m, Next;
+
+	//! Calculate covariance matrix
+	//! Because the matrix is symmetric, we keep only the
+	//! lower-triangular part, which is N*(N+1)/2 entries
+	float *K = (float*)alloca(sizeof(float[FLATTEN_LTRI(nDims, 0)]));
+	for(m=0;m<FLATTEN_LTRI(nDims,0);m++) K[m] = 0.0f;
+	for(Next=x->FirstDataIdx;Next!=CLUSTER_END_OF_LIST;Next=ClusterListIndices[Next]) {
+		float w = Weights ? Weights[Next] : 1.0f;
+		const float *p = Data + Next*nDims;
+		for(i=0;i<nDims;i++) for(j=0;j<=i;j++) {
+			float pi = p[i] - x->Centroid[i];
+			float pj = p[j] - x->Centroid[j];
+			K[FLATTEN_LTRI(i,j)] += w * (pi*pj);
+		}
+	}
+
+	//! Use power iteration to find the principal axis
+	float *Axis = x->Axis;
+	float *Temp = (float*)alloca(sizeof(float[nDims]));
+	for(m=0;m<nDims;m++) Axis[m] = 1.0f;
+	for(k=0;k<EIGEN_ITERS;k++) {
+		for(m=0;m<nDims;m++) Temp[m] = 0;
+		for(i=0;i<nDims;i++) for(j=0;j<nDims;j++) {
+			Temp[i] += K[(i >= j) ? FLATTEN_LTRI(i,j) : FLATTEN_LTRI(j,i)]*Axis[j];
+		}
+		float Norm2 = 0;
+		for(m=0;m<nDims;m++) Norm2 += Temp[m]*Temp[m];
+		if(Norm2 == 0.0f) break;
+		float InvNorm = 1.0f / sqrtf(Norm2);
+		for(m=0;m<nDims;m++) Axis[m] = Temp[m]*InvNorm;
+	}
+#undef FLATTEN_LTRI
+}
+
+static float TCluster_EigenProject(TCluster_t *x, const TClusterData_t *Data, uint32_t nDims) {
+	uint32_t n;
+	float p = 0.0f;
+	for(n=0;n<nDims;n++) {
+		p += x->Axis[n] * Data[n];
+	}
+	return p;
+}
+
+static float TCluster_EigenProjectCentroid(TCluster_t *x, uint32_t nDims) {
+	uint32_t n;
+	float p = 0.0f;
+	for(n=0;n<nDims;n++) {
+		p += x->Axis[n] * x->Centroid[n];
+	}
+	return p;
 }
 
 /************************************************/

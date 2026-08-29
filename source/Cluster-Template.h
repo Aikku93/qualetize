@@ -116,76 +116,149 @@ static void SplitCluster(
 
 /************************************************/
 
-//! Create initial clusters by splitting out the most
-//! distorted point into a new cluster and reclustering,
-//! repeating until we have as many clusters as needed.
-//! The output is usable, but not particularly great.
-//! Note: 1/Variance is stored to InvVariancePtr only
-//! if the distortion is not 0.0!
+//! Create initial clusters using a variation of median-cut
+//! The variation is to split along the center of the principal axis
+//! rather than the median of the axis of highest variance.
+static uint32_t CreateInitialClusters(
+	TCluster_t *Clusters,
+	const TClusterData_t *Data,
+	uint32_t nClusters,
+	uint32_t nDataPoints,
+	uint32_t *ClusterListIndices,
+	const float *Weights,
+	uint32_t nDims
+) {
+	uint32_t n, k, This;
+
+	//! Assign all points to cluster 0 to start with
+	uint32_t nCurrentClusters = 1;
+	Clusters[0].FirstDataIdx = CLUSTER_END_OF_LIST;
+	ClearTraining(&Clusters[0], nDims);
+	for(n=0;n<nDataPoints;n++) {
+		float w = Weights ? Weights[n] : 1.0f;
+		TrainCluster(&Clusters[0], Data + n*nDims, w, nDims);
+		InsertAtListHead(n, &Clusters[0].FirstDataIdx, ClusterListIndices);
+	}
+	ResolveCluster(&Clusters[0], Data, ClusterListIndices, Weights, nDims);
+
+	//! Now perform cuts along the principal axes of maximum variance
+	if(Clusters[0].TotalDist != 0.0f) while(nCurrentClusters < nClusters) {
+		//! Find the principal axis of each cluster, and save
+		//! the cluster of highest variance for splitting
+		uint32_t MaxDistClusterIdx = 0;
+		float MaxDistClusterAvg = 0;
+		float MaxDistClusterVar = 0;
+		for(k=0;k<nCurrentClusters;k++) {
+			//! Find principal axis
+			TCluster_EigenAxis(&Clusters[k], Data, ClusterListIndices, Weights, nDims);
+
+			//! Now find mean and variance along this axis
+			float Avg = TCluster_EigenProjectCentroid(&Clusters[k], nDims);
+			float Var = 0;
+			for(This=Clusters[k].FirstDataIdx;This!=CLUSTER_END_OF_LIST;This=ClusterListIndices[This]) {
+				float w = Weights ? Weights[This] : 1.0f;
+				float p = TCluster_EigenProject(&Clusters[k], Data + This*nDims, nDims);
+				float d = p - Avg;
+				Var += w * d*d;
+			}
+			if(Var > MaxDistClusterVar) {
+				MaxDistClusterIdx = k;
+				MaxDistClusterAvg = Avg;
+				MaxDistClusterVar = Var;
+			}
+		}
+		if(MaxDistClusterVar == 0.0f) {
+			//! No distortion remaining
+			break;
+		}
+
+		//! Split cluster through the center of its principal axis
+		uint32_t SrcCluster = MaxDistClusterIdx;
+		uint32_t NewCluster = nCurrentClusters;
+		uint32_t Next = Clusters[SrcCluster].FirstDataIdx;
+		Clusters[SrcCluster].FirstDataIdx = CLUSTER_END_OF_LIST;
+		Clusters[NewCluster].FirstDataIdx = CLUSTER_END_OF_LIST;
+		ClearTraining(&Clusters[SrcCluster], nDims);
+		ClearTraining(&Clusters[NewCluster], nDims);
+		for(This=Next;This!=CLUSTER_END_OF_LIST;This=Next) {
+			float p = TCluster_EigenProject(&Clusters[SrcCluster], Data + This*nDims, nDims);
+			float w = Weights ? Weights[This] : 1.0f;
+			uint32_t DstCluster = (p < MaxDistClusterAvg) ? SrcCluster : NewCluster;
+			Next = ClusterListIndices[This];
+			TrainCluster(&Clusters[DstCluster], Data + This*nDims, w, nDims);
+			InsertAtListHead(This, &Clusters[DstCluster].FirstDataIdx, ClusterListIndices);
+		}
+		ResolveCluster(&Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
+		ResolveCluster(&Clusters[NewCluster], Data, ClusterListIndices, Weights, nDims);
+		nCurrentClusters++;
+	}
+	return nCurrentClusters;
+}
+
+/************************************************/
+
+//! Create initial clusters using median-cut, then refine
+//! the results using standard k-means clustering.
 static uint32_t CreateClusters(
 	TCluster_t *Clusters,
 	const TClusterData_t *Data,
 	uint32_t nClusters,
 	uint32_t nDataPoints,
 	uint32_t *ClusterListIndices,
-	uint32_t nFinalPasses,
+	uint32_t nPasses,
 	const float *Weights,
 	float *InvVariancePtr,
 	uint32_t nDims
 ) {
 	uint32_t n, k;
 
-	//! Do a quick pass for the first cluster
-	uint32_t nCurrentClusters = 1;
+	//! Create initial clusters using median-cut
+	uint32_t nMedianCutClusters = CreateInitialClusters(Clusters, Data, nClusters, nDataPoints, ClusterListIndices, Weights, nDims);
+	if(nMedianCutClusters < nClusters) return nMedianCutClusters;
+
+	//! Calculate initial distortions
+	//! Note that median-cut guarantees that no empty clusters
 	uint32_t DistClusterHead  = CLUSTER_END_OF_LIST;
 	uint32_t EmptyClusterHead = CLUSTER_END_OF_LIST;
-	for(k=0;k<nClusters;k++) Clusters[k].FirstDataIdx = CLUSTER_END_OF_LIST;
-	ClearTraining(&Clusters[0], nDims);
-	for(n=0;n<nDataPoints;n++) {
-		float w = Weights ? Weights[n] : 1.0f;
-		InsertAtListHead(n, &Clusters[0].FirstDataIdx, ClusterListIndices);
-		TrainCluster(&Clusters[0], Data + n*nDims, w, nDims);
-	}
-	ResolveCluster(&Clusters[0], Data, ClusterListIndices, Weights, nDims);
-	InsertToDistortedClusterList(Clusters, 0, &DistClusterHead);
-
-	//! Because we averaged all the data together at a single point,
-	//! the variance of the dataset is equal to TotalDist/TrainWeight.
-	if(Clusters[0].TotalDist != 0.0f) {
-		*InvVariancePtr = Clusters[0].TrainWeight / Clusters[0].TotalDist;
-	}
-
-	//! Begin creating additional clusters
-	float LastPassDist = Clusters[0].TotalDist;
-	while(nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST) {
-		//! Create new cluster from the most distorted data point.
-		//! Note that we are splitting out the most distorted point
-		//! of the most distorted cluster, NOT the most distorted
-		//! point general. This is an important distinction.
-		//! Also note the commented-out code: This allows splitting
-		//! multiple clusters at once, but because of the very low
-		//! number of iterations we do, the results are quite bad.
-		do {
-			uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
-			uint32_t DstCluster = nCurrentClusters++;
-			SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
-		} while(/*nCurrentClusters < nClusters && DistClusterHead != CLUSTER_END_OF_LIST*/0);
-
-		//! Run at least two k-means passes to improve results a bit
-		uint32_t Pass, nPasses = 2;
-		if(nCurrentClusters == nClusters && nFinalPasses > nPasses) {
-			nPasses = nFinalPasses;
+	float LastPassDist = 0.0f; {
+		float w = 0.0f;
+		for(k=0;k<nClusters;k++) {
+			InsertToDistortedClusterList(Clusters, k, &DistClusterHead);
+			LastPassDist += Clusters[k].TotalDist;
+			w += Clusters[k].TrainWeight;
 		}
-		for(Pass=0;Pass<nPasses;Pass++) {
+		if(LastPassDist == 0.0f) {
+			//! No distortion remaining
+			*InvVariancePtr = 0;
+			return nClusters;
+		}
+		*InvVariancePtr = w / LastPassDist;
+	}
+
+	//! Begin k-means passes
+	uint8_t LastPassSameDist = 0;
+	while(nPasses || (EmptyClusterHead != CLUSTER_END_OF_LIST && DistClusterHead != CLUSTER_END_OF_LIST)) {
+		//! Fill empty clusters from the most distorted data points.
+		//! Note that we are splitting out the most distorted point
+		//! of the most distorted clusters, NOT the most distorted
+		//! points general. This is an important distinction.
+		while(EmptyClusterHead != CLUSTER_END_OF_LIST && DistClusterHead != CLUSTER_END_OF_LIST) {
+			uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
+			uint32_t DstCluster = PopEmptyClusterList    (Clusters, &EmptyClusterHead);
+			SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
+		}
+
+		//! Re-cluster the data points
+		if(nPasses != 0) {
 			//! Assign points to clusters
-			for(k=0;k<nCurrentClusters;k++) {
+			for(k=0;k<nClusters;k++) {
 				Clusters[k].FirstDataIdx = CLUSTER_END_OF_LIST;
 				ClearTraining(&Clusters[k], nDims);
 			}
 			for(n=0;n<nDataPoints;n++) {
 				uint32_t BestIdx  = 0;
 				float    BestDist = INFINITY;
-				for(k=0;k<nCurrentClusters;k++) {
+				for(k=0;k<nClusters;k++) {
 					float Dist = TCluster_Dist2ToCentroid(&Clusters[k], Data + n*nDims, nDims);
 					if(Dist < BestDist) {
 						BestIdx  = k;
@@ -196,12 +269,14 @@ static uint32_t CreateClusters(
 				InsertAtListHead(n, &Clusters[BestIdx].FirstDataIdx, ClusterListIndices);
 				TrainCluster(&Clusters[BestIdx], Data + n*nDims, w, nDims);
 			}
+			nPasses--;
+		}
 
-			//! Resolve clusters
-			float ThisPassDist = 0.0f;
+		//! Resolve new clusters
+		float ThisPassDist = 0.0f; {
 			DistClusterHead  = CLUSTER_END_OF_LIST;
 			EmptyClusterHead = CLUSTER_END_OF_LIST;
-			for(k=0;k<nCurrentClusters;k++) {
+			for(k=0;k<nClusters;k++) {
 				if(ResolveCluster(&Clusters[k], Data, ClusterListIndices, Weights, nDims)) {
 					//! If the cluster resolves, update the distortion linked list
 					InsertToDistortedClusterList(Clusters, k, &DistClusterHead);
@@ -211,29 +286,18 @@ static uint32_t CreateClusters(
 					InsertToEmptyClusterList(Clusters, k, &EmptyClusterHead);
 				}
 			}
-
-			//! Terminate if we exceeded the maximum number of passes.
-			//! This happens if the last iteration had empty clusters
-			//! so that we can assign /something/ to them.
-			if(nPasses >= nFinalPasses) break;
-
-			//! Split the most distorted data points into empty clusters
-			if(DistClusterHead != CLUSTER_END_OF_LIST && EmptyClusterHead != CLUSTER_END_OF_LIST) {
-				//! Do at least one more pass to assign to this cluster
-				nPasses++;
-			}
-			while(DistClusterHead != CLUSTER_END_OF_LIST && EmptyClusterHead != CLUSTER_END_OF_LIST) {
-				uint32_t SrcCluster = PopDistortedClusterList(Clusters, &DistClusterHead);
-				uint32_t DstCluster = PopEmptyClusterList    (Clusters, &EmptyClusterHead);
-				SplitCluster(&Clusters[DstCluster], &Clusters[SrcCluster], Data, ClusterListIndices, Weights, nDims);
-			}
-
-			//! Early exit on convergence
-			if(ThisPassDist == 0.0f || ThisPassDist == LastPassDist) break;
-			LastPassDist = ThisPassDist;
 		}
+
+		//! Early exit on convergence
+		if(ThisPassDist == 0.0f) break;
+		if(ThisPassDist == LastPassDist) {
+			//! If distortion matches the last pass, we try once
+			//! more just in case this was due to rounding error
+			if(LastPassSameDist++ != 0) break;
+		} else LastPassSameDist = 0;
+		LastPassDist = ThisPassDist;
 	}
-	return nCurrentClusters;
+	return nClusters;
 }
 
 /************************************************/
@@ -253,6 +317,7 @@ static void RefineClusters(
 	uint32_t n, k;
 	uint32_t Pass;
 	float LastPassDist = INFINITY;
+	uint8_t LastPassSameDist = 0;
 	for(Pass=0;Pass<nPasses;Pass++) {
 		for(k=0;k<nClusters;k++) {
 			Clusters[k].FirstDataIdx = CLUSTER_END_OF_LIST;
@@ -277,7 +342,6 @@ static void RefineClusters(
 
 			//! Let SoftminDistW = Sum[E^(-a*d_{i,n}), {i,K}]
 			//! Let SoftminDist  = Sum[d_{i,n}*e^(-a*d_{i,n}), {i,K}] / SoftminDistW
-			float WeightSum    = 0.0f;
 			float SoftminDist  = 0.0f;
 			float SoftminDistW = 0.0f;
 			for(k=0;k<nClusters;k++) {
@@ -300,7 +364,6 @@ static void RefineClusters(
 				float w  = w_n * expf(-alpha * d_kn) * InvSoftminDistW;
 				      w *= 1.0f - alpha*(d_kn - SoftminDist);
 				TrainCluster(&Clusters[k], p, w, nDims);
-				WeightSum += w;
 			}
 		}
 
@@ -312,7 +375,12 @@ static void RefineClusters(
 		}
 
 		//! Early exit on convergence
-		if(ThisPassDist == 0.0f || ThisPassDist == LastPassDist) break;
+		if(ThisPassDist == 0.0f) break;
+		if(ThisPassDist == LastPassDist) {
+			//! If distortion matches the last pass, we try once
+			//! more just in case this was due to rounding error
+			if(LastPassSameDist++ != 0) break;
+		} else LastPassSameDist = 0;
 		LastPassDist = ThisPassDist;
 	}
 }
@@ -334,6 +402,9 @@ static inline uint32_t TClusterize_Process(
 	if(!nClusters || !nDataPoints || !nDims) return 0;
 
 	//! Build initial clusters
+	//! Note that EKM appears to work best if we feed it
+	//! the median-cut data directly rather than running
+	//! k-means on it first!
 	float InvVariance = 0.0f; //! <- Shouldn't be needed, but gcc complains
 	uint32_t nOutputClusters = CreateClusters(
 		Clusters,
@@ -346,8 +417,8 @@ static inline uint32_t TClusterize_Process(
 		&InvVariance,
 		nDims
 	);
-	if(nOutputClusters < nClusters || Sharpness <= 0.0f) {
-		//! Early convergence achieved, or no EKM desired - early exit
+	if(InvVariance == 0.0f || Sharpness <= 0.0f) {
+		//! No distortion remaining, or no EKM desired - early exit
 		return nOutputClusters;
 	}
 
